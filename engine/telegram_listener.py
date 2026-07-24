@@ -62,6 +62,7 @@ class TelegramBotListener:
 
 📊 **查询类指令**:
 • `/status` - 立即触发一次实时 PVE 状态简报
+• `/temp` - 单独查询当前硬件温度
 • `/help` - 显示帮助列表
 
 ⚙️ **参数修改指令**:
@@ -87,6 +88,40 @@ class TelegramBotListener:
                 self.app.run_briefing_job()
             except Exception as e:
                 self._send_reply(chat_id, f"❌ 采集过程出错: {e}")
+
+        elif cmd in ["/temp", "/temperature"]:
+            try:
+                temps = self.app.hw_collector.get_temperatures()
+                lines = ["🌡️ **实时硬件温度**"]
+
+                cpu_temp = temps.get("cpu_temp")
+                lines.append(
+                    f"• CPU Package: `{cpu_temp:.1f}°C`"
+                    if isinstance(cpu_temp, (int, float))
+                    else "• CPU Package: `未检测到`"
+                )
+
+                cpu_cores = temps.get("cpu_cores", [])
+                if cpu_cores:
+                    core_values = " / ".join(f"{value:.1f}°C" for value in cpu_cores)
+                    lines.append(f"• CPU 核心: `{core_values}`")
+
+                for label, key in [("NVMe", "nvme_temps"), ("硬盘", "hdd_temps")]:
+                    devices = temps.get(key, {})
+                    if devices:
+                        values = "；".join(
+                            f"{name}: {value:.1f}°C"
+                            for name, value in devices.items()
+                            if isinstance(value, (int, float))
+                        )
+                        if values:
+                            lines.append(f"• {label}: `{values}`")
+
+                lines.append("\n_温度为当前快照，PVE RRD 不提供 24h 温度历史。_")
+                self._send_reply(chat_id, "\n".join(lines))
+            except Exception as e:
+                logger.error(f"实时温度采集失败: {e}")
+                self._send_reply(chat_id, "❌ 温度采集失败，请检查容器的传感器访问权限。")
 
         elif cmd == "/toggle_daily":
             tr_cfg = self.config.setdefault("traffic", {})
