@@ -111,7 +111,7 @@ class TestPVEMonitor(unittest.TestCase):
 
         telegram = self.briefing_gen.generate_telegram_html(data)
         self.assertIn("PVE 每日简报 · test_node", telegram)
-        self.assertIn("CPU   <code>70.0%</code>", telegram)
+        self.assertIn("CPU 使用率  <code>70.0%</code>", telegram)
 
     def test_alert_engine_thresholds(self):
         engine = AlertEngine(self.config)

@@ -264,15 +264,16 @@ class BriefingGenerator:
             f"🟢 {data['running_count']} 运行   🔴 {data['stopped_count']} 停止",
             "",
             "<b>宿主机概览</b>",
-            f"CPU  <code>{data['cpu_usage']}</code>  ·  温度 <code>{data['cpu_temp']}</code>",
-            f"内存 <code>{data['mem_used_str']} / {data['mem_total_str']}</code>  ·  {data['mem_percent']}",
-            f"Swap <code>{data['swap_used_str']} / {data['swap_total_str']}</code>  ·  {data['swap_percent']}",
+            f"CPU 使用率  <code>{data['cpu_usage']}</code>",
+            f"CPU 温度    <code>{data['cpu_temp']}</code>",
+            f"内存        <code>{data['mem_used_str']} / {data['mem_total_str']}</code> ({data['mem_percent']})",
+            f"Swap        <code>{data['swap_used_str']} / {data['swap_total_str']}</code> ({data['swap_percent']})",
             "",
             "<b>24 小时峰值</b>",
-            f"CPU   <code>{cpu_24h.get('max')}</code> @{cpu_24h.get('peak_time')}  ·  均值 {cpu_24h.get('avg')}",
-            f"内存  <code>{mem_24h.get('max')}</code> @{mem_24h.get('peak_time')}  ·  {mem_24h.get('max_pct')}",
-            f"负载  <code>{load_24h.get('max')}</code> @{load_24h.get('peak_time')}  ·  均值 {load_24h.get('avg')}",
-            f"带宽  ↓ <code>{net_24h.get('max_rx')}</code>  ↑ <code>{net_24h.get('max_tx')}</code>",
+            f"CPU 使用率  <code>{cpu_24h.get('max')}</code> @{cpu_24h.get('peak_time')} · 均值 {cpu_24h.get('avg')}",
+            f"内存使用率  <code>{mem_24h.get('max')}</code> @{mem_24h.get('peak_time')} · 均值 {mem_24h.get('avg')}",
+            f"系统负载    <code>{load_24h.get('max')}</code> @{load_24h.get('peak_time')} · 均值 {load_24h.get('avg')}",
+            f"网络带宽    ↓ <code>{net_24h.get('max_rx')}</code> · ↑ <code>{net_24h.get('max_tx')}</code>",
         ]
 
         storage = data.get("storage_info", [])
