@@ -65,10 +65,11 @@ jobs:
 
       - name: Create Release Archive
         run: |
-          tar -czf pveMonitor-${{ github.ref_name }}.tar.gz --exclude='.git*' --exclude='.env' .
+          tar -czf /tmp/pveMonitor-${{ github.ref_name }}.tar.gz --exclude='.git*' --exclude='.env' .
+          mv /tmp/pveMonitor-${{ github.ref_name }}.tar.gz .
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: pveMonitor-${{ github.ref_name }}.tar.gz
         env:
