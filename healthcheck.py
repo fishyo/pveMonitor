@@ -24,12 +24,14 @@ def check_health():
 
     # 2. 检查应用探针心跳文件 freshness
     if not os.path.exists(HEARTBEAT_FILE):
-        # 允许服务启动初始宽限期 (以 config.yaml 状态判断)
+        # 允许服务启动初始宽限期 (通过 /proc/uptime 判定容器开机时长)
         try:
-            mtime = os.path.getmtime(CONFIG_FILE)
-            if (time.time() - mtime) > 120:
-                print("HEALTHCHECK FAIL: Heartbeat file never created after startup grace period")
-                sys.exit(1)
+            if os.path.exists("/proc/uptime"):
+                with open("/proc/uptime", "r") as f:
+                    uptime_sec = float(f.read().split()[0])
+                if uptime_sec > 60:
+                    print("HEALTHCHECK FAIL: Heartbeat file never created after startup grace period")
+                    sys.exit(1)
         except Exception:
             pass
     else:
