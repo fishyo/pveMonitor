@@ -99,7 +99,13 @@ class BriefingGenerator:
         # 24h RRD 历史极值与时间戳提取
         rrd_history = api_data.get("rrd_history", [])
         
-        def _get_peak_info(rrd_list: list, key: str, is_bytes: bool = False, is_rate: bool = False) -> tuple:
+        def _get_peak_info(
+            rrd_list: list,
+            key: str,
+            is_bytes: bool = False,
+            is_rate: bool = False,
+            percent_ratio: bool = False,
+        ) -> tuple:
             valid_items = [r for r in rrd_list if r.get(key) is not None]
             if not valid_items:
                 return ("0.0%", "0.0%", "0.0%", "未知") if not is_bytes else ("0.00 GB", "0.00 GB", "0.00 GB", "未知")
@@ -115,10 +121,21 @@ class BriefingGenerator:
             elif is_bytes:
                 return (self._bytes_to_gb(max_item[key]), self._bytes_to_gb(min_item[key]), self._bytes_to_gb(avg_val), t_str)
             else:
-                return (f"{max_item[key]:.1f}%", f"{min_item[key]:.1f}%", f"{avg_val:.1f}%", t_str)
+                scale = 100 if percent_ratio else 1
+                return (
+                    f"{max_item[key] * scale:.1f}%",
+                    f"{min_item[key] * scale:.1f}%",
+                    f"{avg_val * scale:.1f}%",
+                    t_str,
+                )
 
-        cpu_max, cpu_min, cpu_avg, cpu_peak_time = _get_peak_info(rrd_history, "cpu")
+        cpu_max, cpu_min, cpu_avg, cpu_peak_time = _get_peak_info(
+            rrd_history, "cpu", percent_ratio=True
+        )
         mem_max, mem_min, mem_avg, mem_peak_time = _get_peak_info(rrd_history, "memused", is_bytes=True)
+        memused_history = [
+            r["memused"] for r in rrd_history if r.get("memused") is not None
+        ]
         net_rx_max, net_rx_min, net_rx_avg, net_rx_peak_time = _get_peak_info(rrd_history, "netin", is_rate=True)
         net_tx_max, net_tx_min, net_tx_avg, net_tx_peak_time = _get_peak_info(rrd_history, "netout", is_rate=True)
 
@@ -129,7 +146,9 @@ class BriefingGenerator:
         cpu_stats_24h = {"max": cpu_max, "min": cpu_min, "avg": cpu_avg, "peak_time": cpu_peak_time}
         mem_stats_24h = {
             "max": mem_max, "min": mem_min, "avg": mem_avg, "peak_time": mem_peak_time,
-            "max_pct": f"{(max([r.get('memused',0) for r in rrd_history if r.get('memused')])/mem_total*100):.1f}%" if (rrd_history and mem_total) else "0.0%"
+            "max_pct": f"{(max(memused_history) / mem_total * 100):.1f}%"
+            if (memused_history and mem_total)
+            else "0.0%",
         }
         load_stats_24h = {"max": f"{max(loads_rrd):.2f}" if loads_rrd else "0.00", "min": f"{min(loads_rrd):.2f}" if loads_rrd else "0.00", "avg": f"{sum(loads_rrd)/len(loads_rrd):.2f}" if loads_rrd else "0.00", "peak_time": load_peak_time}
         net_stats_24h = {"max_rx": net_rx_max, "max_tx": net_tx_max, "avg_rx": net_rx_avg, "avg_tx": net_tx_avg, "rx_peak_time": net_rx_peak_time}
@@ -213,7 +232,8 @@ class BriefingGenerator:
 
         return {
             "time": now_str, "node_name": self.node_name, "uptime": uptime,
-            "cpu_usage": f"{cpu_usage:.1f}%", "cpu_temp": f"{cpu_temp}°C" if cpu_temp != "N/A" else "未检测到",
+            "cpu_usage": f"{cpu_usage:.1f}%",
+            "cpu_temp": f"{cpu_temp}°C" if cpu_temp not in ("N/A", None) else "未检测到",
             "nvme_temps": nvme_temps,
             "mem_used_str": self._bytes_to_gb(mem_used), "mem_total_str": self._bytes_to_gb(mem_total), "mem_percent": f"{mem_percent:.1f}%",
             "swap_used_str": self._bytes_to_gb(swap_used), "swap_total_str": self._bytes_to_gb(swap_total), "swap_percent": f"{swap_percent:.1f}%",
@@ -227,75 +247,86 @@ class BriefingGenerator:
         }
 
     def generate_telegram_html(self, data: dict) -> str:
-        """生成专门针对 Telegram 手机聊天框优化的 Telegram HTML 格式简报 (100% 格式美化，无 ** 星号乱码)"""
-        top_guests_str = ""
-        for idx, g in enumerate(data["top_guests"], 1):
-            top_guests_str += f"• <b>[{g['id']}] {g['name']}</b>\n  └ 当前内存: <code>{g['mem_str']}</code>\n  └ 24h CPU: 🔺 <code>{g['cpu_max']}</code> (@{g['cpu_time']}) | 均值 {g['cpu_avg']}\n  └ 24h 内存: 🔺 <code>{g['mem_max']}</code> (@{g['mem_time']}) | 低值 {g['mem_min']}\n"
-        if not top_guests_str:
-            top_guests_str = "• 无运行中的虚拟机/容器\n"
-
+        """生成适合 Telegram 手机聊天框阅读的紧凑 HTML 简报。"""
         show_d = data.get("show_daily", True)
         show_w = data.get("show_weekly", True)
         show_m = data.get("show_monthly", True)
         show_t = data.get("show_total", True)
-
-        vm_net_str = ""
-        for idx, n in enumerate(data.get("vm_net_stats", []), 1):
-            vm_net_str += f"• <b>[{n['id']}] {n['name']}</b>\n"
-            if show_d:
-                vm_net_str += f"  └ 今日24h: ⬇️ <code>{n['day_rx_str']}</code> | ⬆️ <code>{n['day_tx_str']}</code> (共 <code>{n['day_total_str']}</code>)\n"
-            if show_w:
-                vm_net_str += f"  └ 本周7d:  ⬇️ <code>{n['week_rx_str']}</code> | ⬆️ <code>{n['week_tx_str']}</code>\n"
-            if show_m:
-                vm_net_str += f"  └ 本月30d: ⬇️ <code>{n['month_rx_str']}</code> | ⬆️ <code>{n['month_tx_str']}</code>\n"
-            if show_t:
-                vm_net_str += f"  └ 开机累计: ⬇️ <code>{n['total_rx_str']}</code> | ⬆️ <code>{n['total_tx_str']}</code>\n"
-
-        if not vm_net_str:
-            vm_net_str = "• 暂未开启任何网络流量维度\n"
-
-        storage_str = ""
-        for s in data.get("storage_info", []):
-            storage_str += f"• <b>{s['name']}</b> ({s['type']}): 已用 <code>{s['used_str']} / {s['total_str']}</code> (占用 <b>{s['pct']}</b>, 剩余 {s['avail_str']})\n"
-        if not storage_str:
-            storage_str = "• 无可用存储池数据\n"
-
-        usb_str = ""
-        for u in data.get("usb_devices", []):
-            pt_info = f" ──► 直通 <b>{u['passthrough']}</b>" if u.get('passthrough') else ""
-            usb_str += f"• 🔌 <b>{u['name']}</b> (<code>{u['id']}</code>, {u['speed']}){pt_info}\n"
 
         cpu_24h = data.get("cpu_stats_24h", {})
         mem_24h = data.get("mem_stats_24h", {})
         load_24h = data.get("load_stats_24h", {})
         net_24h = data.get("net_stats_24h", {})
 
-        usb_section = f"\n<b>🔌 外接 USB 设备与直通</b>\n{usb_str}" if usb_str else ""
+        lines = [
+            f"📊 <b>PVE 每日简报 · {data['node_name']}</b>",
+            f"<code>{data['time']}</code>  ·  在线 {data['uptime']}",
+            f"🟢 {data['running_count']} 运行   🔴 {data['stopped_count']} 停止",
+            "",
+            "<b>宿主机概览</b>",
+            f"CPU  <code>{data['cpu_usage']}</code>  ·  温度 <code>{data['cpu_temp']}</code>",
+            f"内存 <code>{data['mem_used_str']} / {data['mem_total_str']}</code>  ·  {data['mem_percent']}",
+            f"Swap <code>{data['swap_used_str']} / {data['swap_total_str']}</code>  ·  {data['swap_percent']}",
+            "",
+            "<b>24 小时峰值</b>",
+            f"CPU   <code>{cpu_24h.get('max')}</code> @{cpu_24h.get('peak_time')}  ·  均值 {cpu_24h.get('avg')}",
+            f"内存  <code>{mem_24h.get('max')}</code> @{mem_24h.get('peak_time')}  ·  {mem_24h.get('max_pct')}",
+            f"负载  <code>{load_24h.get('max')}</code> @{load_24h.get('peak_time')}  ·  均值 {load_24h.get('avg')}",
+            f"带宽  ↓ <code>{net_24h.get('max_rx')}</code>  ↑ <code>{net_24h.get('max_tx')}</code>",
+        ]
 
-        html = f"""⏱️ <b>在线</b>: {data['uptime']} | 📅 <code>{data['time']}</code>
+        storage = data.get("storage_info", [])
+        if storage:
+            lines.extend(["", "<b>存储池</b>"])
+            for item in storage:
+                lines.append(
+                    f"• <b>{item['name']}</b>  {item['pct']}  ·  "
+                    f"{item['used_str']} / {item['total_str']}  ·  余 {item['avail_str']}"
+                )
 
-<b>🌡️ 硬件健康</b>
-• CPU 负载/温度: <code>{data['cpu_usage']}</code> | <code>{data['cpu_temp']}</code>
-• 核心存储温度: <code>{data['nvme_temps'] if data['nvme_temps'] else '常温'}</code>
+        network_by_id = {
+            str(item["id"]): item for item in data.get("vm_net_stats", [])
+        }
+        guests = data.get("top_guests", [])
+        if guests:
+            lines.extend(["", "<b>虚拟机 / 容器</b>"])
+            for guest in guests:
+                lines.append(f"• <b>[{guest['id']}] {guest['name']}</b>  ·  内存 {guest['mem_str']}")
+                lines.append(
+                    f"  CPU 24h {guest['cpu_max']} @{guest['cpu_time']}  ·  均 {guest['cpu_avg']}"
+                )
+                network = network_by_id.get(str(guest["id"]))
+                if network:
+                    if show_d:
+                        lines.append(
+                            f"  今日 ↓ {network['day_rx_str']}  ↑ {network['day_tx_str']}  "
+                            f"·  共 {network['day_total_str']}"
+                        )
+                    if show_w:
+                        lines.append(
+                            f"  本周 ↓ {network['week_rx_str']}  ↑ {network['week_tx_str']}"
+                        )
+                    if show_m:
+                        lines.append(
+                            f"  本月 ↓ {network['month_rx_str']}  ↑ {network['month_tx_str']}"
+                        )
+                    if show_t:
+                        lines.append(
+                            f"  累计 ↓ {network['total_rx_str']}  ↑ {network['total_tx_str']}"
+                        )
 
-<b>💾 PVE 存储池容量</b>
-{storage_str}{usb_section}
-<b>📊 宿主机 24h 性能极值 (含发生时刻)</b>
-• <b>CPU 峰值</b>: 🔺 <code>{cpu_24h.get('max')}</code> (@{cpu_24h.get('peak_time')}) | ➖ 均值 {cpu_24h.get('avg')}
-• <b>内存 峰值</b>: 🔺 <code>{mem_24h.get('max')}</code> (@{mem_24h.get('peak_time')} | {mem_24h.get('max_pct')})
-• <b>LoadAvg</b>: 🔺 <code>{load_24h.get('max')}</code> (@{load_24h.get('peak_time')}) | ➖ 均值 {load_24h.get('avg')}
-• <b>最高带宽</b>: ⬇️ <code>{net_24h.get('max_rx')}</code> (@{net_24h.get('rx_peak_time')}) | ⬆️ <code>{net_24h.get('max_tx')}</code>
+        usb_devices = data.get("usb_devices", [])
+        if usb_devices:
+            lines.extend(["", "<b>外接设备</b>"])
+            for device in usb_devices:
+                target = f"  →  {device['passthrough']}" if device.get("passthrough") else ""
+                lines.append(
+                    f"• {device['name']}  ·  <code>{device['id']}</code>  ·  "
+                    f"{device['speed']}{target}"
+                )
 
-<b>🧠 宿主机内存与 Swap</b>
-• 物理内存 (RAM): <code>{data['mem_used_str']} / {data['mem_total_str']} ({data['mem_percent']})</code>
-• 交换空间 (Swap): <code>{data['swap_used_str']} / {data['swap_total_str']} ({data['swap_percent']})</code>
-
-<b>🌐 虚拟机流量统计</b>
-{vm_net_str}
-<b>📦 虚拟机 24h 资源与极值</b> (🟢 {data['running_count']} 运行 | 🔴 {data['stopped_count']} 停止)
-{top_guests_str}
-<i>💡 监控服务由 pveMonitor 自动生成</i>"""
-        return html
+        lines.extend(["", "<i>pveMonitor · 自动生成</i>"])
+        return "\n".join(lines)
 
     def generate_markdown(self, data: dict) -> str:
         """生成 Markdown 格式简报"""
@@ -450,15 +481,21 @@ class BriefingGenerator:
   :root { color-scheme: light dark; supported-color-schemes: light dark; }
   body { background-color: #f5f5f7; color: #1d1d1f; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif; margin: 0; padding: 20px; -webkit-font-smoothing: antialiased; }
   .card { max-width: 720px; margin: 0 auto; background-color: #ffffff; border-radius: 18px; border: 1px solid #e5e5ea; padding: 32px; box-shadow: 0 4px 20px rgba(0,0,0,0.03); box-sizing: border-box; }
-  .header { border-bottom: 1px solid #e5e5ea; padding-bottom: 18px; margin-bottom: 24px; }
+  .header { border-bottom: 1px solid #e5e5ea; padding-bottom: 20px; margin-bottom: 26px; }
   .title { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; color: #1d1d1f; margin: 0; }
   .subtitle { font-size: 13px; color: #86868b; margin-top: 6px; }
+  .status-row { margin-top: 14px; }
+  .status-pill { display: inline-block; padding: 5px 10px; margin: 0 6px 6px 0; border-radius: 999px; background: #f2f2f7; color: #3a3a3c; font-size: 12px; font-weight: 600; }
   .section-title { font-size: 12px; font-weight: 700; color: #0071e3; text-transform: uppercase; letter-spacing: 0.06em; margin: 34px 0 16px 0; border-left: 3px solid #0071e3; padding-left: 10px; }
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 24px; }
   .metric-tile { background-color: #fbfbfd; border: 1px solid #e5e5ea; border-radius: 16px; padding: 20px 22px; box-sizing: border-box; }
   .metric-label { font-size: 13px; color: #86868b; font-weight: 500; }
   .metric-value { font-size: 26px; font-weight: 700; color: #1d1d1f; margin-top: 8px; letter-spacing: -0.02em; }
   .metric-sub { font-size: 12px; color: #86868b; margin-top: 6px; line-height: 1.5; }
+  .peak-row { padding: 12px 0; border-bottom: 1px solid #f2f2f7; font-size: 13px; }
+  .peak-row:last-child { border-bottom: 0; }
+  .peak-name { display: inline-block; width: 24%; color: #86868b; }
+  .peak-value { display: inline-block; width: 72%; color: #1d1d1f; font-weight: 600; }
   .table-container { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; margin-top: 12px; border-radius: 14px; border: 1px solid #e5e5ea; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 480px; }
   th { text-align: left; padding: 14px 16px; color: #86868b; font-weight: 600; border-bottom: 1px solid #e5e5ea; font-size: 12px; background-color: #fbfbfd; }
@@ -476,11 +513,15 @@ class BriefingGenerator:
     .header { border-bottom-color: #2c2c2e !important; }
     .title { color: #ffffff !important; }
     .subtitle { color: #98989d !important; }
+    .status-pill { background-color: #2c2c2e !important; color: #f2f2f7 !important; }
     .section-title { color: #64d2ff !important; border-left-color: #64d2ff !important; }
     .metric-tile { background-color: #2c2c2e !important; border-color: #38383a !important; }
     .metric-label { color: #98989d !important; }
     .metric-value { color: #ffffff !important; }
     .metric-sub { color: #98989d !important; }
+    .peak-row { border-bottom-color: #2c2c2e !important; }
+    .peak-name { color: #98989d !important; }
+    .peak-value { color: #f2f2f7 !important; }
     .table-container { border-color: #2c2c2e !important; }
     table { background-color: #1c1c1e !important; }
     th { background-color: #2c2c2e !important; color: #98989d !important; border-bottom-color: #38383a !important; }
@@ -532,32 +573,65 @@ class BriefingGenerator:
 <body>
   <div class="card">
     <div class="header">
-      <div class="title">Proxmox VE 运行状态快照</div>
-      <div class="subtitle">节点: {{ data.node_name }} · 在线 {{ data.uptime }} · {{ data.time }}</div>
+      <div class="title">Proxmox VE 每日简报 · {{ data.node_name }}</div>
+      <div class="subtitle">{{ data.time }} · 已连续运行 {{ data.uptime }}</div>
+      <div class="status-row">
+        <span class="status-pill">🟢 {{ data.running_count }} 台运行</span>
+        <span class="status-pill">🔴 {{ data.stopped_count }} 台停止</span>
+        <span class="status-pill">共 {{ data.total_guests }} 台虚拟机 / 容器</span>
+      </div>
     </div>
 
-    <div class="section-title">系统核心状态</div>
+    <div class="section-title">当前状态</div>
     <div style="width: 100%; text-align: left; font-size: 0; margin-bottom: 12px;">
       <div class="tile-box" style="display: inline-block; width: 48%; min-width: 260px; max-width: 100%; vertical-align: top; margin-bottom: 14px; margin-right: 3%; box-sizing: border-box; font-size: 13px;">
         <div class="metric-tile" style="min-height: 125px; box-sizing: border-box;">
-          <div class="metric-label">CPU 温度 & 24h 峰值</div>
-          <div class="metric-value">{{ data.cpu_temp }}</div>
+          <div class="metric-label">CPU 使用率</div>
+          <div class="metric-value">{{ data.cpu_usage }}</div>
           <div class="metric-sub">
-            <div>最高 {{ data.cpu_stats_24h.max }} (<span class="time-badge">@{{ data.cpu_stats_24h.peak_time }}</span>)</div>
-            <div>平均 {{ data.cpu_stats_24h.avg }}</div>
+            <div>24h 峰值 {{ data.cpu_stats_24h.max }} @{{ data.cpu_stats_24h.peak_time }}</div>
+            <div>24h 均值 {{ data.cpu_stats_24h.avg }}</div>
           </div>
         </div>
       </div>
       <div class="tile-box" style="display: inline-block; width: 48%; min-width: 260px; max-width: 100%; vertical-align: top; margin-bottom: 14px; box-sizing: border-box; font-size: 13px;">
         <div class="metric-tile" style="min-height: 125px; box-sizing: border-box;">
-          <div class="metric-label">内存占用 & 24h 峰值</div>
-          <div class="metric-value">{{ data.mem_percent }}</div>
+          <div class="metric-label">CPU 温度</div>
+          <div class="metric-value">{{ data.cpu_temp }}</div>
           <div class="metric-sub">
-            <div>已用 {{ data.mem_used_str }} / 共 {{ data.mem_total_str }}</div>
-            <div>最高 {{ data.mem_stats_24h.max }} (<span class="time-badge">@{{ data.mem_stats_24h.peak_time }}</span>)</div>
+            <div>当前采集快照</div>
+            <div>暂无 24h 温度历史数据</div>
           </div>
         </div>
       </div>
+      <div class="tile-box" style="display: inline-block; width: 48%; min-width: 260px; max-width: 100%; vertical-align: top; margin-bottom: 14px; margin-right: 3%; box-sizing: border-box; font-size: 13px;">
+        <div class="metric-tile" style="min-height: 125px; box-sizing: border-box;">
+          <div class="metric-label">内存占用</div>
+          <div class="metric-value">{{ data.mem_percent }}</div>
+          <div class="metric-sub">
+            <div>已用 {{ data.mem_used_str }} / {{ data.mem_total_str }}</div>
+            <div>Swap {{ data.swap_percent }} · {{ data.swap_used_str }} / {{ data.swap_total_str }}</div>
+          </div>
+        </div>
+      </div>
+      <div class="tile-box" style="display: inline-block; width: 48%; min-width: 260px; max-width: 100%; vertical-align: top; margin-bottom: 14px; box-sizing: border-box; font-size: 13px;">
+        <div class="metric-tile" style="min-height: 125px; box-sizing: border-box;">
+          <div class="metric-label">虚拟机 / 容器</div>
+          <div class="metric-value">{{ data.running_count }} / {{ data.total_guests }}</div>
+          <div class="metric-sub">
+            <div>{{ data.running_count }} 台运行 · {{ data.stopped_count }} 台停止</div>
+            <div>状态来自当前 PVE 快照</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-title">24 小时峰值</div>
+    <div class="metric-tile">
+      <div class="peak-row"><span class="peak-name">CPU</span><span class="peak-value">{{ data.cpu_stats_24h.max }} @{{ data.cpu_stats_24h.peak_time }} · 均值 {{ data.cpu_stats_24h.avg }}</span></div>
+      <div class="peak-row"><span class="peak-name">内存</span><span class="peak-value">{{ data.mem_stats_24h.max }} @{{ data.mem_stats_24h.peak_time }} · {{ data.mem_stats_24h.max_pct }}</span></div>
+      <div class="peak-row"><span class="peak-name">系统负载</span><span class="peak-value">{{ data.load_stats_24h.max }} @{{ data.load_stats_24h.peak_time }} · 均值 {{ data.load_stats_24h.avg }}</span></div>
+      <div class="peak-row"><span class="peak-name">网络带宽</span><span class="peak-value">↓ {{ data.net_stats_24h.max_rx }} · ↑ {{ data.net_stats_24h.max_tx }}</span></div>
     </div>
 
     <div class="section-title">存储池容量</div>

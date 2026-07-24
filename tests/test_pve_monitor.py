@@ -8,6 +8,7 @@ from notifiers.webhook_notifier import WebhookNotifier
 from collectors.pve_api import PVECollector
 from collectors.hardware import HardwareCollector
 from collectors.system_health import SystemHealthCollector
+from engine.telegram_listener import TelegramBotListener
 
 class TestPVEMonitor(unittest.TestCase):
 
@@ -68,12 +69,49 @@ class TestPVEMonitor(unittest.TestCase):
         self.assertIn("45.0°C", md)
 
         html = self.briefing_gen.generate_html(sample_data)
-        self.assertIn("Proxmox VE 运行状态快照", html)
+        self.assertIn("Proxmox VE 每日简报 · test_node", html)
         self.assertIn("Western Digital My Passport", html)
 
         tg_html = self.briefing_gen.generate_telegram_html(sample_data)
-        self.assertIn("<b>🌡️ 硬件健康</b>", tg_html)
+        self.assertIn("<b>宿主机概览</b>", tg_html)
         self.assertIn("Western Digital My Passport", tg_html)
+
+    def test_cpu_rrd_ratio_is_rendered_as_percentage(self):
+        api_data = {
+            "node_status": {
+                "cpu": 0.42,
+                "memory": {"used": 8 * 1024**3, "total": 16 * 1024**3},
+                "swap": {"used": 0, "total": 0},
+            },
+            "rrd_history": [
+                {"time": 1_700_000_000, "cpu": 0.25},
+                {"time": 1_700_003_600, "cpu": 0.70},
+            ],
+            "latest_rrd": {},
+            "vms": [],
+            "lxcs": [],
+            "storages": [],
+        }
+
+        data = self.briefing_gen.build_briefing_data(
+            api_data,
+            {"temperatures": {"cpu_temp": 68.0}},
+            {},
+            self.config,
+        )
+
+        self.assertEqual(data["cpu_usage"], "42.0%")
+        self.assertEqual(data["cpu_stats_24h"]["max"], "70.0%")
+        self.assertEqual(data["cpu_stats_24h"]["avg"], "47.5%")
+
+        html = self.briefing_gen.generate_html(data)
+        self.assertIn("CPU 使用率", html)
+        self.assertIn("24 小时峰值", html)
+        self.assertIn("70.0% @", html)
+
+        telegram = self.briefing_gen.generate_telegram_html(data)
+        self.assertIn("PVE 每日简报 · test_node", telegram)
+        self.assertIn("CPU   <code>70.0%</code>", telegram)
 
     def test_alert_engine_thresholds(self):
         engine = AlertEngine(self.config)
@@ -161,6 +199,25 @@ class TestPVEMonitor(unittest.TestCase):
     def test_webhook_notifier(self):
         wn = WebhookNotifier(self.config)
         self.assertEqual(wn.webhook_type, "bark")
+
+    def test_telegram_temperature_command(self):
+        app = MagicMock()
+        app.hw_collector.get_temperatures.return_value = {
+            "cpu_temp": 64.0,
+            "cpu_cores": [59.0, 64.0],
+            "nvme_temps": {"nvme0": 42.0},
+            "hdd_temps": {},
+        }
+        listener = TelegramBotListener(self.config, app)
+        listener._send_reply = MagicMock()
+
+        listener._handle_command("123", "/temp")
+
+        reply = listener._send_reply.call_args.args[1]
+        self.assertIn("CPU Package: `64.0°C`", reply)
+        self.assertIn("CPU 核心: `59.0°C / 64.0°C`", reply)
+        self.assertIn("NVMe: `nvme0: 42.0°C`", reply)
+        self.assertIn("不提供 24h 温度历史", reply)
 
 if __name__ == "__main__":
     unittest.main()
