@@ -22,8 +22,17 @@ def check_health():
         print(f"HEALTHCHECK FAIL: config.yaml parse error: {e}")
         sys.exit(1)
 
-    # 2. 检查应用探针心跳文件 freshness (如果心跳文件超过 10 分钟未更新则判定判定死锁/崩溃)
-    if os.path.exists(HEARTBEAT_FILE):
+    # 2. 检查应用探针心跳文件 freshness
+    if not os.path.exists(HEARTBEAT_FILE):
+        # 允许服务启动初始宽限期 (以 config.yaml 状态判断)
+        try:
+            mtime = os.path.getmtime(CONFIG_FILE)
+            if (time.time() - mtime) > 120:
+                print("HEALTHCHECK FAIL: Heartbeat file never created after startup grace period")
+                sys.exit(1)
+        except Exception:
+            pass
+    else:
         try:
             mtime = os.path.getmtime(HEARTBEAT_FILE)
             elapsed = time.time() - mtime
