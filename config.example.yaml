@@ -1,0 +1,75 @@
+# Proxmox VE 状态简报与预警服务配置文件示例
+
+# PVE 连接配置
+pve:
+  host: "127.0.0.1"           # PVE 节点 IP (如果在 PVE 本地运行使用 127.0.0.1)
+  port: 8006                  # PVE 端口，默认 8006
+  node_name: "pve"            # PVE 节点名称
+  verify_ssl: false           # 是否验证 SSL 证书
+  
+  auth_type: "password"       # 认证模式: password 或 token
+  user: "root@pam"
+  password: "YOUR_PVE_PASSWORD" # 请填入您的 PVE root 密码
+
+# 远程 SSH 硬件温度配置 (选择免 SSH API 模式时保留 false)
+ssh_hardware:
+  enabled: false
+  host: "127.0.0.1"
+  port: 22
+  user: "root"
+  password: "YOUR_PVE_PASSWORD"
+
+# 定时调度配置
+schedule:
+  briefing_cron: "0 8 * * *"   # 每天早上 08:00 发送每日简报
+  briefing_on_start: false
+  alert_interval_seconds: 120  # 每 2 分钟轮询检测一次状态与告警
+
+# 告警阈值配置
+thresholds:
+  temperature:
+    cpu_warning: 75           # CPU 温度高于 75°C 告警
+    nvme_warning: 60          # NVMe 固态硬盘高于 60°C 告警
+    
+  memory:
+    usage_percent_warning: 90 # 内存使用率高于 90% 告警
+    swap_percent_warning: 50   # Swap 使用率高于 50% 告警
+
+  vms:
+    alert_on_stopped: true
+    key_vm_ids: [101, 103]     # 重点监控的虚拟机/容器 ID
+
+# 流量统计维度开关配置
+traffic:
+  show_daily: true            # 是否在简报中显示 24h 日流量
+  show_weekly: true           # 是否在简报中显示 7天 周流量
+  show_monthly: true          # 是否在简报中显示 30天 月流量
+  show_total: true            # 是否在简报中显示 开机至今累计总流量
+
+alert_cooldown_minutes: 60    # 同一告警冷却时间 (分钟)
+
+# 通知渠道配置
+notifiers:
+  # 邮件通知 (支持 SMTP SSL/TLS)
+  email:
+    enabled: false             # 配置完成后修改为 true
+    smtp_host: "smtp.qq.com"   # 如: smtp.qq.com / smtp.163.com
+    smtp_port: 465
+    use_ssl: true
+    username: "your_email@qq.com"
+    password: "YOUR_EMAIL_AUTH_CODE"
+    sender: "PVE 监控服务 <your_email@qq.com>"
+    receivers:
+      - "your_email@qq.com"
+
+  # Telegram Bot 交互与通知
+  telegram:
+    enabled: false
+    bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+    chat_id: "YOUR_TELEGRAM_CHAT_ID"
+
+  # 通用 Webhook (支持 飞书/钉钉/企业微信/Server酱/Bark)
+  webhook:
+    enabled: false
+    type: "feishu"             # 可选: feishu, dingtalk, wechat, serverchan, bark
+    url: ""

@@ -1,0 +1,19 @@
+services:
+  pve-monitor:
+    build: .
+    container_name: pve-monitor
+    restart: unless-stopped
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      # 硬件读取挂载说明: 
+      # 1. 默认使用 100% 纯 PVE REST API 模式获取温度与 SMART 寿命，无需挂载 /sys 或 /dev，也无需 privileged 特权模式。
+      # 2. 若配置了启用本地 sysfs/lm-sensors 温度读取，可取消注释以下只读挂载:
+      # - /sys/class/thermal:/sys/class/thermal:ro
+      # - /sys/class/hwmon:/sys/class/hwmon:ro
+    environment:
+      - TZ=Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "python", "healthcheck.py"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

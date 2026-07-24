@@ -1,0 +1,23 @@
+# Credentials & Local Config
+config.yaml
+.env
+
+# Runtime Logs & Backups
+logs/
+*.log
+*.tar.gz
+config.yaml.bak
+
+# Temp Scratch Scripts
+scratch/
+
+# Python Caches
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+
+# IDE Caches
+.vscode/
+.idea/

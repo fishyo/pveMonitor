@@ -1,0 +1,14 @@
+config.yaml
+scratch/
+.git/
+.gitignore
+.env
+logs/
+*.log
+*.tar.gz
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+tests/
