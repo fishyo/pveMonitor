@@ -13,7 +13,7 @@ class TestPVEMonitor(unittest.TestCase):
 
     def setUp(self):
         self.config = {
-            "pve": {"host": "127.0.0.1", "port": 8006, "node_name": "test_node", "verify_ssl": False, "auth_type": "password", "user": "root@pam", "password": "wrong_password"},
+            "pve": {"host": "127.0.0.1", "port": 8006, "node_name": "test_node", "verify_ssl": False, "auth_type": "token", "user": "root@pam", "token_id": "test", "token_secret": "secret"},
             "thresholds": {
                 "temperature": {"cpu_warning": 75, "nvme_warning": 60},
                 "memory": {"usage_percent_warning": 90, "swap_percent_warning": 50},
@@ -98,16 +98,41 @@ class TestPVEMonitor(unittest.TestCase):
         self.assertIn("vm_stopped_101", alert_keys)
 
     @patch("requests.post")
-    def test_pve_api_auth_failure_recovery(self, mock_post):
+    @patch("requests.get")
+    def test_pve_api_auth_failure_handling(self, mock_get, mock_post):
         mock_post.side_effect = requests.exceptions.RequestException("401 Unauthorized")
-        collector = PVECollector(self.config)
+        mock_get.side_effect = requests.exceptions.RequestException("Connection Refused")
+        
+        pass_config = dict(self.config)
+        pass_config["pve"] = dict(self.config["pve"])
+        pass_config["pve"]["auth_type"] = "password"
+        pass_config["pve"]["password"] = "wrong"
+
+        collector = PVECollector(pass_config)
         self.assertEqual(collector.cookies, {})
-        # Verify fallback response is empty dict without crashing
+        # Verify get_node_status handles exception gracefully and returns {}
         data = collector.get_node_status()
         self.assertEqual(data, {})
 
+    @patch("requests.post")
+    def test_pve_api_password_auth_success(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "data": {"ticket": "PVE:ticket123", "CSRFPreventionToken": "CSRF123"}
+        }
+        mock_resp.raise_for_status.return_value = None
+        mock_post.return_value = mock_resp
+
+        pass_config = dict(self.config)
+        pass_config["pve"] = dict(self.config["pve"])
+        pass_config["pve"]["auth_type"] = "password"
+
+        collector = PVECollector(pass_config)
+        self.assertEqual(collector.cookies.get("PVEAuthCookie"), "PVE:ticket123")
+        self.assertEqual(collector.headers.get("CSRFPreventionToken"), "CSRF123")
+
     @patch("requests.get")
-    def test_pve_api_pve7_pve8_compatibility(self, mock_get):
+    def test_pve_api_mock_data_collection(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
             "data": [
