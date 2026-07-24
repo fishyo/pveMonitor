@@ -10,6 +10,8 @@ services:
       # 2. 若配置了启用本地 sysfs/lm-sensors 温度读取，可取消注释以下只读挂载:
       # - /sys/class/thermal:/sys/class/thermal:ro
       # - /sys/class/hwmon:/sys/class/hwmon:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - TZ=Asia/Shanghai
     healthcheck:
