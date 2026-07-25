@@ -1,3 +1,4 @@
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 import requests
@@ -114,7 +115,7 @@ class TestPVEMonitor(unittest.TestCase):
         self.assertIn("CPU 使用率  <code>70.0%</code>", telegram)
 
     def test_alert_engine_thresholds(self):
-        engine = AlertEngine(self.config)
+        engine = AlertEngine(self.config, history_file=None)
         api_data = {
             "node_status": {
                 "memory": {"used": 15 * (1024**3), "total": 16 * (1024**3)},
@@ -218,6 +219,75 @@ class TestPVEMonitor(unittest.TestCase):
         self.assertIn("CPU 核心: `59.0°C / 64.0°C`", reply)
         self.assertIn("NVMe: `nvme0: 42.0°C`", reply)
         self.assertIn("不提供 24h 温度历史", reply)
+
+    def test_alert_engine_persistent_history(self):
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            history_path = tf.name
+
+        try:
+            engine1 = AlertEngine(self.config, history_file=history_path)
+            engine1._mark_alerted("test_key")
+            self.assertTrue(engine1._is_in_cooldown("test_key"))
+
+            # Create a new engine instance using the same history file (simulating container restart)
+            engine2 = AlertEngine(self.config, history_file=history_path)
+            self.assertTrue(engine2._is_in_cooldown("test_key"))
+        finally:
+            if os.path.exists(history_path):
+                os.remove(history_path)
+
+    @patch("requests.get")
+    def test_telegram_flush_old_updates(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"result": [{"update_id": 999}]}
+        mock_get.return_value = mock_resp
+
+        tg_config = dict(self.config)
+        tg_config["notifiers"]["telegram"] = {"enabled": True, "bot_token": "dummy", "chat_id": "123"}
+        listener = TelegramBotListener(tg_config, None)
+        listener._flush_old_updates()
+
+        self.assertEqual(listener.offset, 1000)
+
+    def test_telegram_status_rate_limiting(self):
+        app = MagicMock()
+        app.generate_briefing.return_value = {"tg_html": "<b>PVE 简报</b>"}
+        tg_config = dict(self.config)
+        tg_config["notifiers"]["telegram"] = {"enabled": True, "bot_token": "dummy", "chat_id": "123"}
+        listener = TelegramBotListener(tg_config, app)
+        listener._send_reply = MagicMock()
+
+        # First call triggers generate_briefing and sends direct Telegram HTML reply
+        listener._handle_command("123", "/status")
+        self.assertEqual(app.generate_briefing.call_count, 1)
+        self.assertEqual(app.run_briefing_job.call_count, 0)  # Must NOT send email/broadcast
+
+        # Immediate second call triggers rate limit warning without running briefing generation again
+        listener._handle_command("123", "/status")
+        self.assertEqual(app.generate_briefing.call_count, 1)
+        self.assertIn("过于频繁", listener._send_reply.call_args.args[1])
+
+    @patch("requests.get")
+    def test_telegram_cancel_command(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"result": [{"update_id": 500}]}
+        mock_get.return_value = mock_resp
+
+        tg_config = dict(self.config)
+        tg_config["notifiers"]["telegram"] = {"enabled": True, "bot_token": "dummy", "chat_id": "123"}
+        listener = TelegramBotListener(tg_config, None)
+        listener.last_status_time = time.time()
+        listener._send_reply = MagicMock()
+
+        listener._handle_command("123", "/cancel")
+
+        self.assertEqual(listener.last_status_time, 0)
+        self.assertEqual(listener.offset, 501)
+        self.assertIn("已成功清空", listener._send_reply.call_args.args[1])
 
 if __name__ == "__main__":
     unittest.main()

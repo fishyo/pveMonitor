@@ -21,15 +21,33 @@ class TelegramBotListener:
         self.offset = 0
         self.running = False
         self.thread = None
+        self.start_time = 0
+        self.last_status_time = 0
 
     def start(self):
         if not self.enabled or not self.bot_token:
             logger.info("Telegram Bot 未启用或未配置 token，跳过交互监听。")
             return
         self.running = True
+        self.start_time = time.time()
+        self._flush_old_updates()
         self.thread = threading.Thread(target=self._poll_updates, daemon=True)
         self.thread.start()
         logger.info("Telegram Bot 交互指令监听已启动...")
+
+    def _flush_old_updates(self):
+        """清空启动前离线期间积累的 Telegram 历史待处理消息 (防止重启后批量重复触发指令)"""
+        url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
+        try:
+            resp = requests.get(url, params={"offset": -1, "timeout": 5}, timeout=10)
+            if resp.status_code == 200:
+                updates = resp.json().get("result", [])
+                if updates:
+                    latest_id = updates[-1]["update_id"]
+                    self.offset = latest_id + 1
+                    logger.info(f"Telegram Bot 已清理历史待处理消息队列，最新 offset: {self.offset}")
+        except Exception as e:
+            logger.warning(f"Telegram Bot 清理历史消息队列失败: {e}")
 
     def stop(self):
         self.running = False
@@ -40,10 +58,10 @@ class TelegramBotListener:
             yaml.safe_dump(new_config, f, allow_unicode=True, sort_keys=False)
         logger.info("已通过 Telegram 指令更新 config.yaml")
 
-    def _send_reply(self, chat_id: str, text: str):
+    def _send_reply(self, chat_id: str, text: str, parse_mode: str = "Markdown"):
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
         try:
-            requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=5)
+            requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": parse_mode}, timeout=10)
         except Exception as e:
             logger.error(f"Telegram 回复消息失败: {e}")
 
@@ -60,9 +78,10 @@ class TelegramBotListener:
         if cmd in ["/start", "/help"]:
             help_msg = """🤖 **PVE 监控服务 Telegram Bot 指令列表**:
 
-📊 **查询类指令**:
-• `/status` - 立即触发一次实时 PVE 状态简报
+📊 **查询与控制类指令**:
+• `/status` - 立即触发一次实时 PVE 状态简报 (仅 Telegram 框架内回复)
 • `/temp` - 单独查询当前硬件温度
+• `/cancel` - 强行清空所有积压的历史指令并重置排队状态
 • `/help` - 显示帮助列表
 
 ⚙️ **参数修改指令**:
@@ -82,10 +101,25 @@ class TelegramBotListener:
 """
             self._send_reply(chat_id, help_msg)
 
+        elif cmd in ["/cancel", "/clear", "/stop_queue"]:
+            self.last_status_time = 0
+            self._flush_old_updates()
+            self._send_reply(
+                chat_id,
+                "🧹 **已成功清空 Telegram 待处理消息队列！**\n"
+                "所有积压的历史指令已丢弃，频控限制已解开，Bot 已恢复全新就绪状态。"
+            )
+
         elif cmd in ["/status", "/pve"]:
+            now = time.time()
+            if now - self.last_status_time < 15:
+                self._send_reply(chat_id, "⚠️ 简报生成请求过于频繁，请稍后再试。")
+                return
+            self.last_status_time = now
             self._send_reply(chat_id, "🔄 正在为您实时采集 PVE 节点数据，请稍候...")
             try:
-                self.app.run_briefing_job()
+                brief_data = self.app.generate_briefing()
+                self._send_reply(chat_id, brief_data["tg_html"], parse_mode="HTML")
             except Exception as e:
                 self._send_reply(chat_id, f"❌ 采集过程出错: {e}")
 
@@ -215,10 +249,15 @@ class TelegramBotListener:
                     for update in updates:
                         self.offset = update["update_id"] + 1
                         msg = update.get("message", {})
+                        msg_date = msg.get("date", 0)
+                        # 过滤掉启动前收到的离线旧消息 (允许 10 秒时钟偏差)
+                        if self.start_time and msg_date and msg_date < (self.start_time - 10):
+                            logger.info(f"跳过 Telegram 历史待处理消息 (date: {msg_date})")
+                            continue
                         chat_id = msg.get("chat", {}).get("id")
                         text = msg.get("text", "")
                         if text and chat_id:
-                            self._handle_command(chat_id, text)
+                            threading.Thread(target=self._handle_command, args=(chat_id, text), daemon=True).start()
             except Exception as e:
                 time.sleep(5)
             time.sleep(1)

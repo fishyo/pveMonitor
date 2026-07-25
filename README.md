@@ -102,11 +102,15 @@ notifiers:
 ## 🤖 Telegram Bot 交互指令
 
 向 Telegram Bot 发送以下指令即可实现实时交互：
-- `/status` - 立即拉取并返回最新简报
+- `/status` - 实时拉取并回复最新简报 (仅在 Telegram 框架内回复，不触发邮件/Webhook)
+- `/temp` - 单独查询当前 CPU 包、核心及 NVMe/硬盘硬件温度
+- `/cancel` - 强行清空待处理消息队列并重置频控与排队状态
 - `/set_cpu <温度>` - 动态修改 CPU 告警阈值
+- `/set_mem <百分比>` - 动态修改内存告警比例
 - `/set_nvme <温度>` - 动态修改 NVMe 固态告警阈值
 - `/toggle_alert` - 动态暂停 / 恢复后台告警轮询
 - `/toggle_daily` - 开关简报 24h 流量统计
+- `/toggle_email` - 开关邮件通知
 
 ---
 

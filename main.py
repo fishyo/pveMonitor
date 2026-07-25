@@ -102,21 +102,37 @@ class PVEMonitorApp:
                     logger.warning(f"移除 alert_check 任务失败: {e}")
             logger.info("告警轮询任务已成功暂停并移除调度队列")
 
+    def generate_briefing(self) -> dict:
+        """采集 PVE 数据并生成各渠道格式的简报内容"""
+        api_data = self.pve_collector.collect_all()
+        hw_data = self.hw_collector.collect_all(pve_collector=self.pve_collector)
+        health_data = self.health_collector.collect_all()
+
+        brief_dict = self.briefing_gen.build_briefing_data(api_data, hw_data, health_data, self.config)
+        markdown_content = self.briefing_gen.generate_markdown(brief_dict)
+        html_content = self.briefing_gen.generate_html(brief_dict)
+        tg_html_content = self.briefing_gen.generate_telegram_html(brief_dict)
+
+        title = f"Proxmox VE 状态每日简报 ({brief_dict['node_name']})"
+        return {
+            "title": title,
+            "brief_dict": brief_dict,
+            "markdown": markdown_content,
+            "html": html_content,
+            "tg_html": tg_html_content,
+        }
+
     def run_briefing_job(self):
-        """执行状态简报采集与发送任务"""
-        logger.info("正在采集 PVE 数据并生成状态简报...")
+        """执行状态简报采集与全渠道广播任务 (适用于 Cron 定时器)"""
+        logger.info("正在采集 PVE 数据并广播发送状态简报...")
         try:
-            api_data = self.pve_collector.collect_all()
-            hw_data = self.hw_collector.collect_all(pve_collector=self.pve_collector)
-            health_data = self.health_collector.collect_all()
-
-            brief_dict = self.briefing_gen.build_briefing_data(api_data, hw_data, health_data, self.config)
-            markdown_content = self.briefing_gen.generate_markdown(brief_dict)
-            html_content = self.briefing_gen.generate_html(brief_dict)
-            tg_html_content = self.briefing_gen.generate_telegram_html(brief_dict)
-
-            title = f"Proxmox VE 状态每日简报 ({brief_dict['node_name']})"
-            self.notifier_mgr.broadcast_briefing(title, markdown_content, html_content, tg_html=tg_html_content)
+            brief_data = self.generate_briefing()
+            self.notifier_mgr.broadcast_briefing(
+                title=brief_data["title"],
+                markdown_content=brief_data["markdown"],
+                html_content=brief_data["html"],
+                tg_html=brief_data["tg_html"]
+            )
         except Exception as e:
             logger.error(f"生成状态简报过程出错: {e}", exc_info=True)
 
@@ -188,16 +204,18 @@ def main():
     else:
         logger.info("异常预警轮询处于暂停状态 (alert_interval_seconds <= 0)")
 
+    # 确保 logs 目录存在
+    os.makedirs("logs", exist_ok=True)
+
     # 启动时是否先跑一次简报
     if config.get("schedule", {}).get("briefing_on_start", True):
         logger.info("服务启动，立即发送首条测试简报...")
         app.run_briefing_job()
+    else:
+        logger.info("briefing_on_start 设置为 false，跳过启动时首条简报发送，等待 Cron 调度触发")
 
     scheduler.start()
     logger.info("pveMonitor 监控服务已启动并进入后台轮询...")
-    
-    # 确保 logs 目录存在
-    os.makedirs("logs", exist_ok=True)
     
     try:
         while True:

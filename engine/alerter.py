@@ -1,18 +1,48 @@
 import datetime
+import json
 import logging
+import os
 
 logger = logging.getLogger("pveMonitor.engine.alerter")
 
-class AlertEngine:
-    """即时异常预警规则评估引擎 (包含防刷屏 Cooling 冷却机制)"""
+HISTORY_FILE = "logs/alert_history.json"
 
-    def __init__(self, config: dict):
+class AlertEngine:
+    """即时异常预警规则评估引擎 (包含防刷屏 Cooling 冷却机制，持久化记录跨重启)"""
+
+    def __init__(self, config: dict, history_file: str = HISTORY_FILE):
         self.config = config
         self.thresholds = config.get("thresholds", {})
         self.cooldown_minutes = config.get("alert_cooldown_minutes", 60)
+        self.history_file = history_file
         
         # 记录已触发告警的上次发送时间 { alert_key: datetime }
         self._alert_history = {}
+        self._load_history()
+
+    def _load_history(self):
+        """从持久化文件加载告警历史"""
+        if not self.history_file or not os.path.exists(self.history_file) or os.path.getsize(self.history_file) == 0:
+            return
+        try:
+            with open(self.history_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                for k, v in data.items():
+                    self._alert_history[k] = datetime.datetime.fromisoformat(v)
+        except Exception as e:
+            logger.warning(f"读取告警历史记录失败: {e}")
+
+    def _save_history(self):
+        """将告警历史持久化至 JSON 文件"""
+        if not self.history_file:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.history_file), exist_ok=True)
+            data = {k: v.isoformat() for k, v in self._alert_history.items()}
+            with open(self.history_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"保存告警历史记录失败: {e}")
 
     def _is_in_cooldown(self, alert_key: str) -> bool:
         """检查特定规则告警是否尚处于冷却时间内"""
@@ -23,8 +53,9 @@ class AlertEngine:
         return elapsed < self.cooldown_minutes
 
     def _mark_alerted(self, alert_key: str):
-        """记录告警触发时间"""
+        """记录告警触发时间并持久化"""
         self._alert_history[alert_key] = datetime.datetime.now()
+        self._save_history()
 
     def check_alerts(self, api_data: dict, hw_data: dict, health_data: dict) -> list:
         """根据最新监控数据评估告警规则，返回待触发的告警列表"""
