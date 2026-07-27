@@ -171,6 +171,33 @@ class TestPVEMonitor(unittest.TestCase):
         self.assertEqual(collector.headers.get("CSRFPreventionToken"), "CSRF123")
 
     @patch("requests.get")
+    @patch("requests.post")
+    def test_pve_api_password_reauthenticates_after_ticket_expiry(self, mock_post, mock_get):
+        login_resp = MagicMock()
+        login_resp.json.side_effect = [
+            {"data": {"ticket": "PVE:old", "CSRFPreventionToken": "CSRF-old"}},
+            {"data": {"ticket": "PVE:new", "CSRFPreventionToken": "CSRF-new"}},
+        ]
+        login_resp.raise_for_status.return_value = None
+        mock_post.return_value = login_resp
+
+        expired_resp = MagicMock(status_code=401)
+        success_resp = MagicMock(status_code=200)
+        success_resp.raise_for_status.return_value = None
+        success_resp.json.return_value = {"data": {"cpu": 0.25}}
+        mock_get.side_effect = [expired_resp, success_resp]
+
+        pass_config = dict(self.config)
+        pass_config["pve"] = dict(self.config["pve"])
+        pass_config["pve"]["auth_type"] = "password"
+        collector = PVECollector(pass_config)
+
+        self.assertEqual(collector.get_node_status(), {"cpu": 0.25})
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertEqual(collector.cookies["PVEAuthCookie"], "PVE:new")
+
+    @patch("requests.get")
     def test_pve_api_mock_data_collection(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.json.return_value = {

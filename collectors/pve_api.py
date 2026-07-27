@@ -1,4 +1,5 @@
 import logging
+import threading
 import urllib3
 import requests
 
@@ -21,6 +22,7 @@ class PVECollector:
         self.auth_type = self.config.get("auth_type", "token")
         self.headers = {}
         self.cookies = {}
+        self._reauth_lock = threading.Lock()
         
         self._setup_auth()
 
@@ -60,7 +62,7 @@ class PVECollector:
             logger.error(f"PVE 密码登录认证失败: {e}")
 
     def _get(self, endpoint: str, params: dict = None) -> dict:
-        """通用 GET API 请求包装"""
+        """通用 GET API 请求包装；密码票据过期时自动重新认证并重试一次。"""
         url = f"{self.base_url}{endpoint}"
         try:
             resp = requests.get(
@@ -71,6 +73,18 @@ class PVECollector:
                 verify=self.verify_ssl,
                 timeout=10
             )
+            if resp.status_code == 401 and self.auth_type == "password":
+                logger.info("PVE 登录票据已过期，正在自动重新认证")
+                with self._reauth_lock:
+                    self._login_with_password()
+                resp = requests.get(
+                    url,
+                    headers=self.headers,
+                    cookies=self.cookies,
+                    params=params,
+                    verify=self.verify_ssl,
+                    timeout=10
+                )
             resp.raise_for_status()
             return resp.json().get("data", {})
         except Exception as e:
