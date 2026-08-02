@@ -10,6 +10,8 @@ class TelegramNotifier(BaseNotifier):
     def __init__(self, config: dict):
         self.config = config.get("notifiers", {}).get("telegram", {})
         self.enabled = self.config.get("enabled", False)
+        self.briefing_enabled = self.config.get("briefing_enabled", True)
+        self.alert_enabled = self.config.get("alert_enabled", True)
         self.bot_token = self.config.get("bot_token", "")
         self.chat_id = self.config.get("chat_id", "")
 
@@ -34,9 +36,16 @@ class TelegramNotifier(BaseNotifier):
             return False
 
     def send_briefing(self, title: str, markdown_content: str, html_content: str = None, tg_html: str = None) -> bool:
+        if not self.briefing_enabled:
+            logger.info("Telegram 定时简报推送已被设置禁用，跳过发送")
+            return False
         content = tg_html if tg_html else markdown_content
         return self._send_msg(f"📊 {title}", content)
 
     def send_alert(self, title: str, markdown_content: str, html_content: str = None, tg_html: str = None) -> bool:
+        if not self.alert_enabled:
+            logger.info("Telegram 告警推送已被设置禁用，跳过发送")
+            return False
         content = tg_html if tg_html else markdown_content
         return self._send_msg(f"⚠️ {title}", content)
+
