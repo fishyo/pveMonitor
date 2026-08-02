@@ -10,6 +10,8 @@ class WebhookNotifier(BaseNotifier):
     def __init__(self, config: dict):
         self.config = config.get("notifiers", {}).get("webhook", {})
         self.enabled = self.config.get("enabled", False)
+        self.briefing_enabled = self.config.get("briefing_enabled", True)
+        self.alert_enabled = self.config.get("alert_enabled", True)
         self.webhook_type = self.config.get("type", "generic").lower()
         self.url = self.config.get("url", "")
 
@@ -57,7 +59,13 @@ class WebhookNotifier(BaseNotifier):
             return False
 
     def send_briefing(self, title: str, markdown_content: str, html_content: str = None) -> bool:
+        if not self.briefing_enabled:
+            logger.info(f"Webhook [{self.webhook_type}] 简报推送已被设置禁用，跳过发送")
+            return False
         return self._send(f"📊 {title}", markdown_content)
 
     def send_alert(self, title: str, markdown_content: str, html_content: str = None) -> bool:
+        if not self.alert_enabled:
+            logger.info(f"Webhook [{self.webhook_type}] 告警推送已被设置禁用，跳过发送")
+            return False
         return self._send(f"⚠️ {title}", markdown_content)

@@ -53,6 +53,7 @@ notifiers:
   # 邮件通知 (支持 SMTP SSL/TLS)
   email:
     enabled: false             # 配置完成后修改为 true
+    briefing_enabled: true     # 是否开启邮件定时简报推送
     smtp_host: "smtp.qq.com"   # 如: smtp.qq.com / smtp.163.com
     smtp_port: 465
     use_ssl: true
@@ -65,11 +66,13 @@ notifiers:
   # Telegram Bot 交互与通知
   telegram:
     enabled: false
+    briefing_enabled: true     # 是否开启 Telegram 每日简报自动推送 (设为 false 可独立关闭简报，仅保留告警与手动 /status 查询)
     bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
     chat_id: "YOUR_TELEGRAM_CHAT_ID"
 
   # 通用 Webhook (支持 飞书/钉钉/企业微信/Server酱/Bark)
   webhook:
     enabled: false
+    briefing_enabled: true     # 是否开启 Webhook 定时简报推送
     type: "feishu"             # 可选: feishu, dingtalk, wechat, serverchan, bark
     url: ""

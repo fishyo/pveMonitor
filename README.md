@@ -82,6 +82,7 @@ notifiers:
 
   telegram:
     enabled: true
+    briefing_enabled: true     # 是否开启 Telegram 每日定时简报自动推送
     bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
     chat_id: "YOUR_TELEGRAM_CHAT_ID"
 ```
@@ -109,6 +110,7 @@ notifiers:
 - `/set_mem <百分比>` - 动态修改内存告警比例
 - `/set_nvme <温度>` - 动态修改 NVMe 固态告警阈值
 - `/toggle_alert` - 动态暂停 / 恢复后台告警轮询
+- `/toggle_briefing` - 动态开启 / 关闭 Telegram 定时简报自动推送
 - `/toggle_daily` - 开关简报 24h 流量统计
 - `/toggle_email` - 开关邮件通知
 

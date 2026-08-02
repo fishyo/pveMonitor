@@ -14,6 +14,8 @@ class EmailNotifier(BaseNotifier):
     def __init__(self, config: dict):
         self.config = config.get("notifiers", {}).get("email", {})
         self.enabled = self.config.get("enabled", False)
+        self.briefing_enabled = self.config.get("briefing_enabled", True)
+        self.alert_enabled = self.config.get("alert_enabled", True)
         self.smtp_host = self.config.get("smtp_host", "")
         self.smtp_port = self.config.get("smtp_port", 465)
         self.use_ssl = self.config.get("use_ssl", True)
@@ -63,9 +65,15 @@ class EmailNotifier(BaseNotifier):
             return False
 
     def send_briefing(self, title: str, markdown_content: str, html_content: str = None) -> bool:
+        if not self.briefing_enabled:
+            logger.info("邮件简报推送已被设置禁用，跳过发送")
+            return False
         subject = f"📊 【PVE 状态简报】{title}"
         return self._send_email(subject, markdown_content, html_content)
 
     def send_alert(self, title: str, markdown_content: str, html_content: str = None) -> bool:
+        if not self.alert_enabled:
+            logger.info("邮件告警推送已被设置禁用，跳过发送")
+            return False
         subject = f"⚠️ 【PVE 紧急预警】{title}"
         return self._send_email(subject, markdown_content, html_content)

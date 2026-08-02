@@ -96,6 +96,7 @@ class TelegramBotListener:
 • `/toggle_total` - 开启 / 关闭 开机至今总流量统计
 
 🔘 **通知开关指令**:
+• `/toggle_briefing` - 开启 / 关闭 Telegram 定时简报推送
 • `/toggle_email` - 一键开启 / 关闭邮件通知
 • `/toggle_alert` - 一键暂停 / 恢复异常告警
 """
@@ -188,6 +189,15 @@ class TelegramBotListener:
             self._save_config_and_reload(self.config)
             status_str = "🟢 已开启" if not curr else "🔴 已关闭"
             self._send_reply(chat_id, f"🌐 **流量维度变更**: 开机累计总流量统计已切换为 **{status_str}**！")
+
+        elif cmd in ["/toggle_briefing", "/toggle_tg_briefing"]:
+            tg_cfg = self.config.setdefault("notifiers", {}).setdefault("telegram", {})
+            curr = tg_cfg.get("briefing_enabled", True)
+            tg_cfg["briefing_enabled"] = not curr
+            self._save_config_and_reload(self.config)
+            self.app.notifier_mgr._init_notifiers()
+            status_str = "🟢 已开启" if not curr else "🔴 已关闭"
+            self._send_reply(chat_id, f"🔔 **通知开关变更**: Telegram 定时简报推送已切换为 **{status_str}**！")
 
         elif cmd == "/toggle_email":
             email_cfg = self.config.setdefault("notifiers", {}).setdefault("email", {})
