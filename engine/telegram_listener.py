@@ -8,7 +8,7 @@ CONFIG_FILE = "config.yaml"
 logger = logging.getLogger("pveMonitor.telegram_bot")
 
 class TelegramBotListener:
-    """Telegram Bot 交互式指令与参数修改监听器 (后台线程)"""
+    """Telegram Bot 交互式管理中心与指令监听器 (后台线程)"""
 
     def __init__(self, config: dict, app_instance):
         self.config = config
@@ -33,10 +33,10 @@ class TelegramBotListener:
         self._flush_old_updates()
         self.thread = threading.Thread(target=self._poll_updates, daemon=True)
         self.thread.start()
-        logger.info("Telegram Bot 交互指令监听已启动...")
+        logger.info("Telegram Bot 交互管理中心监听已启动...")
 
     def _flush_old_updates(self):
-        """清空启动前离线期间积累的 Telegram 历史待处理消息 (防止重启后批量重复触发指令)"""
+        """清空启动前离线期间积累的 Telegram 历史待处理消息"""
         url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
         try:
             resp = requests.get(url, params={"offset": -1, "timeout": 5}, timeout=10)
@@ -86,28 +86,39 @@ class TelegramBotListener:
         except Exception as e:
             logger.error(f"Telegram 应答 callback query 失败: {e}")
 
-    def _build_main_menu(self) -> tuple[str, dict]:
-        """构建 PVE 监控 Bot 主控制面板菜单"""
+    # ==================== 页面面板构建器 (Menu Builders) ====================
+
+    def _build_manage_menu(self) -> tuple[str, dict]:
+        """构建主管理中心面板 (Manage Control Center)"""
+        node_name = self.config.get("pve", {}).get("node_name", "pve")
+        alert_interval = self.config.get("schedule", {}).get("alert_interval_seconds", 120)
+        alert_status = f"🟢 轮询中 ({alert_interval}s)" if alert_interval > 0 else "🔴 已暂停"
+        key_vms = self.config.get("thresholds", {}).get("vms", {}).get("key_vm_ids", [])
+        key_vms_count = f"{len(key_vms)} 个实例" if key_vms else "全部 (未指定)"
+
         text = (
-            "🤖 <b>Proxmox VE 监控服务主控制面板</b>\n\n"
-            "点击下方按钮进行可视化控制与配置："
+            f"🎛️ <b>Proxmox VE 监控服务 · 管理中心 (/manage)</b>\n\n"
+            f"📍 <b>节点名称</b>: <code>{node_name}</code>\n"
+            f"⚠️ <b>告警引擎</b>: <code>{alert_status}</code>\n"
+            f"🖥️ <b>重点监控</b>: <code>{key_vms_count}</code>\n\n"
+            f"点击下方按钮进行模块化配置与诊断："
         )
         keyboard = [
             [
-                {"text": "📊 实时简报", "callback_data": "cmd_status"},
-                {"text": "🌡️ 硬件温度", "callback_data": "cmd_temp"}
+                {"text": "🖥️ 实例监控点选", "callback_data": "m_vms"},
+                {"text": "⚙️ 告警阈值配置", "callback_data": "m_thresholds"}
             ],
             [
-                {"text": "🖥️ 实例重点监控配置", "callback_data": "menu_vms"},
-                {"text": "⚙️ 告警轮询开关", "callback_data": "cmd_toggle_alert"}
+                {"text": "🔔 通知开关控制", "callback_data": "m_notifiers"},
+                {"text": "🌐 流量维度设置", "callback_data": "m_traffic"}
             ],
             [
-                {"text": "🔔 TG简报推送", "callback_data": "cmd_toggle_briefing"},
-                {"text": "📧 邮件通知开关", "callback_data": "cmd_toggle_email"}
+                {"text": "📊 实时简报快照", "callback_data": "cmd_status"},
+                {"text": "🌡️ 硬件温度快照", "callback_data": "cmd_temp"}
             ],
             [
-                {"text": "❓ 帮助说明", "callback_data": "menu_help"},
-                {"text": "❌ 关闭菜单", "callback_data": "menu_close"}
+                {"text": "❓ 帮助指南", "callback_data": "m_help"},
+                {"text": "❌ 关闭管理中心", "callback_data": "m_close"}
             ]
         ]
         return text, {"inline_keyboard": keyboard}
@@ -132,12 +143,10 @@ class TelegramBotListener:
         except Exception as e:
             logger.warning(f"从 PVE API 获取实例列表失败: {e}")
 
-        # 若 API 未能获取实例（如测试环境），从 key_vms 填充
         if not guests and key_vms:
             for g_id in key_vms:
                 guests.append({"id": g_id, "name": f"VM-{g_id}", "status": "unknown"})
 
-        # 去重并排序
         seen = set()
         unique_guests = []
         for g in guests:
@@ -174,60 +183,184 @@ class TelegramBotListener:
         toggle_alert_text = "🔴 关闭停机告警" if alert_on else "🟢 开启停机告警"
         keyboard.append([
             {"text": f"🔔 {toggle_alert_text}", "callback_data": "vm_action_toggle_alert"},
-            {"text": "🧹 监控全部(清空列表)", "callback_data": "vm_action_clear"}
+            {"text": "🧹 监控全部(清空)", "callback_data": "vm_action_clear"}
         ])
 
         keyboard.append([
-            {"text": "🔙 返回主菜单", "callback_data": "menu_main"},
-            {"text": "❌ 关闭菜单", "callback_data": "menu_close"}
+            {"text": "🔙 返回管理中心", "callback_data": "m_manage"},
+            {"text": "❌ 关闭菜单", "callback_data": "m_close"}
         ])
 
         return text, {"inline_keyboard": keyboard}
 
+    def _build_thresholds_menu(self) -> tuple[str, dict]:
+        """构建告警阈值调整面板 (Thresholds Panel)"""
+        th = self.config.get("thresholds", {})
+        temp_th = th.get("temperature", {})
+        mem_th = th.get("memory", {})
+
+        cpu_warning = temp_th.get("cpu_warning", 75)
+        nvme_warning = temp_th.get("nvme_warning", 60)
+        mem_warning = mem_th.get("usage_percent_warning", 90)
+
+        text = (
+            f"⚙️ <b>告警预警阈值设置面板</b>\n\n"
+            f"🔥 <b>CPU 告警温度</b>: <code>{cpu_warning}°C</code>\n"
+            f"🔥 <b>NVMe 告警温度</b>: <code>{nvme_warning}°C</code>\n"
+            f"🧠 <b>物理内存预警比例</b>: <code>{mem_warning}%</code>\n\n"
+            f"👇 <b>使用下方按钮快速调节参数</b>："
+        )
+
+        keyboard = [
+            [
+                {"text": f"🔥 CPU: {cpu_warning}°C ⬇️", "callback_data": "th_cpu_-5"},
+                {"text": f"🔥 CPU: {cpu_warning}°C ⬆️", "callback_data": "th_cpu_+5"}
+            ],
+            [
+                {"text": f"🔥 NVMe: {nvme_warning}°C ⬇️", "callback_data": "th_nvme_-5"},
+                {"text": f"🔥 NVMe: {nvme_warning}°C ⬆️", "callback_data": "th_nvme_+5"}
+            ],
+            [
+                {"text": f"🧠 内存: {mem_warning}% ⬇️", "callback_data": "th_mem_-5"},
+                {"text": f"🧠 内存: {mem_warning}% ⬆️", "callback_data": "th_mem_+5"}
+            ],
+            [
+                {"text": "🔙 返回管理中心", "callback_data": "m_manage"},
+                {"text": "❌ 关闭菜单", "callback_data": "m_close"}
+            ]
+        ]
+        return text, {"inline_keyboard": keyboard}
+
+    def _build_notifiers_menu(self) -> tuple[str, dict]:
+        """构建通知渠道控制面板 (Notifiers Panel)"""
+        n_cfg = self.config.get("notifiers", {})
+        tg_briefing = n_cfg.get("telegram", {}).get("briefing_enabled", True)
+        email_enabled = n_cfg.get("email", {}).get("enabled", False)
+        alert_interval = self.config.get("schedule", {}).get("alert_interval_seconds", 120)
+
+        tg_str = "🟢 开启" if tg_briefing else "🔴 关闭"
+        email_str = "🟢 开启" if email_enabled else "🔴 关闭"
+        alert_str = f"🟢 运行中 ({alert_interval}s)" if alert_interval > 0 else "🔴 已暂停"
+
+        text = (
+            f"🔔 <b>通知渠道与轮询控制面板</b>\n\n"
+            f"• Telegram 定时简报推送: <b>{tg_str}</b>\n"
+            f"• 邮件 notification 状态: <b>{email_str}</b>\n"
+            f"• 异常预警后台轮询: <b>{alert_str}</b>\n\n"
+            f"点击下方按钮进行切换："
+        )
+
+        keyboard = [
+            [
+                {"text": f"🔔 TG简报: {tg_str}", "callback_data": "n_tg_briefing"},
+                {"text": f"📧 邮件通知: {email_str}", "callback_data": "n_email"}
+            ],
+            [
+                {"text": f"⚠️ 后台告警轮询: {alert_str}", "callback_data": "n_alert_engine"}
+            ],
+            [
+                {"text": "🔙 返回管理中心", "callback_data": "m_manage"},
+                {"text": "❌ 关闭菜单", "callback_data": "m_close"}
+            ]
+        ]
+        return text, {"inline_keyboard": keyboard}
+
+    def _build_traffic_menu(self) -> tuple[str, dict]:
+        """构建流量统计维度开关面板 (Traffic Dimensions Panel)"""
+        tr = self.config.get("traffic", {})
+        d = "🟢 开" if tr.get("show_daily", True) else "🔴 关"
+        w = "🟢 开" if tr.get("show_weekly", True) else "🔴 关"
+        m = "🟢 开" if tr.get("show_monthly", True) else "🔴 关"
+        t = "🟢 开" if tr.get("show_total", True) else "🔴 关"
+
+        text = (
+            f"🌐 <b>简报流量统计维度配置面板</b>\n\n"
+            f"• 24h 日流量统计: <b>{d}</b>\n"
+            f"• 7d 周流量统计: <b>{w}</b>\n"
+            f"• 30d 月流量统计: <b>{m}</b>\n"
+            f"• 开机至今累计总流量: <b>{t}</b>\n\n"
+            f"点击下方按钮切换对应维度的显示与隐藏："
+        )
+
+        keyboard = [
+            [
+                {"text": f"24h 日流量: {d}", "callback_data": "tr_daily"},
+                {"text": f"7d 周流量: {w}", "callback_data": "tr_weekly"}
+            ],
+            [
+                {"text": f"30d 月流量: {m}", "callback_data": "tr_monthly"},
+                {"text": f"累计总流量: {t}", "callback_data": "tr_total"}
+            ],
+            [
+                {"text": "🔙 返回管理中心", "callback_data": "m_manage"},
+                {"text": "❌ 关闭菜单", "callback_data": "m_close"}
+            ]
+        ]
+        return text, {"inline_keyboard": keyboard}
+
     def _get_help_text(self) -> str:
         return (
-            "🤖 <b>PVE 监控服务 Telegram Bot 指令说明</b>:\n\n"
-            "📊 <b>可视化菜单控制</b>:\n"
-            "• /start 或 /menu - 呼出交互式主菜单\n"
-            "• /key_vms 或 /vms - 打开虚拟机/容器点选配置面板\n\n"
-            "🔍 <b>状态查询</b>:\n"
-            "• /status - 立即拉取并生成实时 PVE 简报\n"
-            "• /temp - 查看 CPU 及 NVMe 硬件实时温度\n"
-            "• /cancel - 清空积压待处理队列\n\n"
-            "⚙️ <b>命令行修改设置</b>:\n"
+            "🤖 <b>Proxmox VE 监控服务 · Bot 指令指南</b>:\n\n"
+            "🎛️ <b>交互式管理中心</b>:\n"
+            "• <b>/manage</b> - 呼出核心管理控制面板 (推荐使用)\n"
+            "• <b>/start</b> 或 <b>/menu</b> - 进入管理中心\n"
+            "• <b>/key_vms</b> 或 <b>/vms</b> - 直达实例重点监控点选面板\n\n"
+            "🔍 <b>状态与诊断</b>:\n"
+            "• <b>/status</b> - 实时拉取并回复 PVE 状态简报\n"
+            "• <b>/temp</b> - 查看 CPU 及 NVMe/硬盘硬件温度快照\n"
+            "• <b>/cancel</b> - 强行清空积压待处理消息队列\n\n"
+            "⚙️ <b>快捷命令行指令</b>:\n"
             "• /set_cpu &lt;温度&gt; - 修改 CPU 告警温度 (如 /set_cpu 80)\n"
             "• /set_mem &lt;百分比&gt; - 修改内存告警比例 (如 /set_mem 85)\n"
             "• /set_nvme &lt;温度&gt; - 修改 NVMe 告警温度 (如 /set_nvme 65)\n"
-            "• /set_key_vms &lt;ID列表&gt; - 设置重点监控列表 (如 /set_key_vms 101,102)\n"
+            "• /set_key_vms &lt;ID列表&gt; - 批量设置重点监控 (如 /set_key_vms 101,102)\n"
             "• /add_key_vm &lt;ID&gt; / /del_key_vm &lt;ID&gt; - 手动增删监控实例"
         )
 
+    # ==================== Callback Query Handler ====================
+
     def _handle_callback_query(self, cb_id: str, chat_id: str, msg_id: int, data: str):
-        # 安全验证
         if self.chat_id and str(chat_id) != self.chat_id:
             self._answer_callback(cb_id, "⛔ 未授权的操作")
             return
 
-        if data == "menu_main":
+        # 菜单导航回调
+        if data in ["m_manage", "menu_main"]:
             self._answer_callback(cb_id)
-            text, reply_markup = self._build_main_menu()
+            text, reply_markup = self._build_manage_menu()
             self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
 
-        elif data == "menu_vms":
+        elif data in ["m_vms", "menu_vms"]:
             self._answer_callback(cb_id)
             text, reply_markup = self._build_vm_menu()
             self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
 
-        elif data == "menu_help":
+        elif data == "m_thresholds":
+            self._answer_callback(cb_id)
+            text, reply_markup = self._build_thresholds_menu()
+            self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
+
+        elif data == "m_notifiers":
+            self._answer_callback(cb_id)
+            text, reply_markup = self._build_notifiers_menu()
+            self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
+
+        elif data == "m_traffic":
+            self._answer_callback(cb_id)
+            text, reply_markup = self._build_traffic_menu()
+            self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
+
+        elif data in ["m_help", "menu_help"]:
             self._answer_callback(cb_id)
             help_msg = self._get_help_text()
-            keyboard = [[{"text": "🔙 返回主菜单", "callback_data": "menu_main"}]]
+            keyboard = [[{"text": "🔙 返回管理中心", "callback_data": "m_manage"}]]
             self._edit_message(chat_id, msg_id, help_msg, reply_markup={"inline_keyboard": keyboard})
 
-        elif data == "menu_close":
-            self._answer_callback(cb_id, "已关闭")
-            self._edit_message(chat_id, msg_id, "❌ <b>菜单已关闭</b>")
+        elif data in ["m_close", "menu_close"]:
+            self._answer_callback(cb_id, "管理中心已关闭")
+            self._edit_message(chat_id, msg_id, "❌ <b>管理中心已关闭</b>")
 
+        # 实例监控面板回调
         elif data.startswith("toggle_vm_"):
             try:
                 vm_id = int(data.replace("toggle_vm_", ""))
@@ -265,11 +398,95 @@ class TelegramBotListener:
             text, reply_markup = self._build_vm_menu()
             self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
 
+        # 阈值调整回调
+        elif data.startswith("th_"):
+            parts = data.split("_")
+            metric = parts[1]
+            delta = int(parts[2])
+            th_cfg = self.config.setdefault("thresholds", {})
+            if metric == "cpu":
+                curr = th_cfg.setdefault("temperature", {}).get("cpu_warning", 75)
+                new_val = max(40, min(100, curr + delta))
+                th_cfg["temperature"]["cpu_warning"] = new_val
+                cb_msg = f"CPU 告警调整为 {new_val}°C"
+            elif metric == "nvme":
+                curr = th_cfg.setdefault("temperature", {}).get("nvme_warning", 60)
+                new_val = max(40, min(90, curr + delta))
+                th_cfg["temperature"]["nvme_warning"] = new_val
+                cb_msg = f"NVMe 告警调整为 {new_val}°C"
+            elif metric == "mem":
+                curr = th_cfg.setdefault("memory", {}).get("usage_percent_warning", 90)
+                new_val = max(50, min(99, curr + delta))
+                th_cfg["memory"]["usage_percent_warning"] = new_val
+                cb_msg = f"内存预警调整为 {new_val}%"
+            else:
+                cb_msg = "未知调整项"
+
+            self._save_config_and_reload(self.config)
+            self._answer_callback(cb_id, cb_msg)
+            text, reply_markup = self._build_thresholds_menu()
+            self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
+
+        # 通知渠道控制回调
+        elif data == "n_tg_briefing":
+            tg_cfg = self.config.setdefault("notifiers", {}).setdefault("telegram", {})
+            curr = tg_cfg.get("briefing_enabled", True)
+            tg_cfg["briefing_enabled"] = not curr
+            self._save_config_and_reload(self.config)
+            self.app.notifier_mgr._init_notifiers()
+            cb_msg = "TG 定时简报已关闭" if curr else "TG 定时简报已开启"
+            self._answer_callback(cb_id, cb_msg)
+            text, reply_markup = self._build_notifiers_menu()
+            self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
+
+        elif data == "n_email":
+            email_cfg = self.config.setdefault("notifiers", {}).setdefault("email", {})
+            curr = email_cfg.get("enabled", False)
+            email_cfg["enabled"] = not curr
+            self._save_config_and_reload(self.config)
+            self.app.notifier_mgr._init_notifiers()
+            cb_msg = "邮件通知已关闭" if curr else "邮件通知已开启"
+            self._answer_callback(cb_id, cb_msg)
+            text, reply_markup = self._build_notifiers_menu()
+            self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
+
+        elif data == "n_alert_engine":
+            alert_interval = self.config.setdefault("schedule", {}).get("alert_interval_seconds", 120)
+            if alert_interval > 0:
+                self.config.setdefault("schedule", {})["alert_interval_seconds"] = 0
+                new_sec = 0
+                cb_msg = "告警引擎已暂停"
+            else:
+                self.config.setdefault("schedule", {})["alert_interval_seconds"] = 120
+                new_sec = 120
+                cb_msg = "告警引擎已恢复"
+            self._save_config_and_reload(self.config)
+            self.app.update_alert_job_interval(new_sec)
+            self._answer_callback(cb_id, cb_msg)
+            text, reply_markup = self._build_notifiers_menu()
+            self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
+
+        # 流量维度回调
+        elif data.startswith("tr_"):
+            dim = data.replace("tr_", "")
+            key_map = {"daily": "show_daily", "weekly": "show_weekly", "monthly": "show_monthly", "total": "show_total"}
+            if dim in key_map:
+                key = key_map[dim]
+                tr_cfg = self.config.setdefault("traffic", {})
+                curr = tr_cfg.get(key, True)
+                tr_cfg[key] = not curr
+                self._save_config_and_reload(self.config)
+                cb_msg = f"流量统计已{'关闭' if curr else '开启'}"
+                self._answer_callback(cb_id, cb_msg)
+                text, reply_markup = self._build_traffic_menu()
+                self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
+
+        # 命令动作回调
         elif data == "cmd_status":
             self._answer_callback(cb_id, "正在实时拉取简报...")
             try:
                 brief_data = self.app.generate_briefing()
-                keyboard = [[{"text": "🔙 返回主菜单", "callback_data": "menu_main"}]]
+                keyboard = [[{"text": "🔙 返回管理中心", "callback_data": "m_manage"}]]
                 self._send_reply(chat_id, brief_data["tg_html"], parse_mode="HTML", reply_markup={"inline_keyboard": keyboard})
             except Exception as e:
                 self._send_reply(chat_id, f"❌ 采集过程出错: {e}")
@@ -278,20 +495,9 @@ class TelegramBotListener:
             self._answer_callback(cb_id)
             self._handle_command(chat_id, "/temp")
 
-        elif data == "cmd_toggle_alert":
-            self._handle_command(chat_id, "/toggle_alert")
-            self._answer_callback(cb_id)
-
-        elif data == "cmd_toggle_briefing":
-            self._handle_command(chat_id, "/toggle_briefing")
-            self._answer_callback(cb_id)
-
-        elif data == "cmd_toggle_email":
-            self._handle_command(chat_id, "/toggle_email")
-            self._answer_callback(cb_id)
+    # ==================== Command Handler ====================
 
     def _handle_command(self, chat_id: str, text: str):
-        # 安全验证: 仅响应配置中的白名单 chat_id
         if self.chat_id and str(chat_id) != self.chat_id:
             logger.warning(f"拒绝未经授权的 Telegram 交互请求, Chat ID: {chat_id}")
             self._send_reply(chat_id, "⛔ 未授权的 Chat ID，拒绝操作。")
@@ -300,13 +506,13 @@ class TelegramBotListener:
         cmd_parts = text.strip().split()
         cmd = cmd_parts[0].lower()
 
-        if cmd in ["/start", "/menu"]:
-            text, reply_markup = self._build_main_menu()
+        if cmd in ["/manage", "/start", "/menu"]:
+            text, reply_markup = self._build_manage_menu()
             self._send_reply(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
 
         elif cmd in ["/help"]:
             help_msg = self._get_help_text()
-            keyboard = [[{"text": "🔙 返回主菜单", "callback_data": "menu_main"}]]
+            keyboard = [[{"text": "🔙 返回管理中心", "callback_data": "m_manage"}]]
             self._send_reply(chat_id, help_msg, parse_mode="HTML", reply_markup={"inline_keyboard": keyboard})
 
         elif cmd in ["/key_vms", "/get_key_vms", "/vms", "/edit_vms"]:
@@ -332,7 +538,7 @@ class TelegramBotListener:
             self._send_reply(chat_id, "🔄 正在为您实时采集 PVE 节点数据，请稍候...", parse_mode="HTML")
             try:
                 brief_data = self.app.generate_briefing()
-                keyboard = [[{"text": "🔙 返回主菜单", "callback_data": "menu_main"}]]
+                keyboard = [[{"text": "🔙 返回管理中心", "callback_data": "m_manage"}]]
                 self._send_reply(chat_id, brief_data["tg_html"], parse_mode="HTML", reply_markup={"inline_keyboard": keyboard})
             except Exception as e:
                 self._send_reply(chat_id, f"❌ 采集过程出错: {e}", parse_mode="HTML")
@@ -366,7 +572,7 @@ class TelegramBotListener:
                             lines.append(f"• {label}: <code>{values}</code>")
 
                 lines.append("\n<i>温度为当前快照，PVE RRD 不提供 24h 温度历史。</i>")
-                keyboard = [[{"text": "🔙 返回主菜单", "callback_data": "menu_main"}]]
+                keyboard = [[{"text": "🔙 返回管理中心", "callback_data": "m_manage"}]]
                 self._send_reply(chat_id, "\n".join(lines), parse_mode="HTML", reply_markup={"inline_keyboard": keyboard})
             except Exception as e:
                 logger.error(f"实时温度采集失败: {e}")

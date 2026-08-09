@@ -480,7 +480,35 @@ class TestPVEMonitor(unittest.TestCase):
 
         # Test callback_query menu_main (Back to main menu)
         listener._handle_callback_query("cb_3", "123", 99, "menu_main")
-        self.assertIn("主控制面板", listener._edit_message.call_args.args[2])
+        self.assertIn("管理中心", listener._edit_message.call_args.args[2])
+
+    @patch("engine.telegram_listener.TelegramBotListener._save_config_and_reload")
+    def test_telegram_manage_center_and_subpanels(self, mock_save):
+        app = MagicMock()
+        tg_config = dict(self.config)
+        tg_config["notifiers"]["telegram"] = {"enabled": True, "bot_token": "dummy", "chat_id": "123"}
+        listener = TelegramBotListener(tg_config, app)
+        listener._send_reply = MagicMock()
+        listener._answer_callback = MagicMock()
+        listener._edit_message = MagicMock()
+
+        # Test /manage command
+        listener._handle_command("123", "/manage")
+        self.assertIn("管理中心 (/manage)", listener._send_reply.call_args.args[1])
+
+        # Test threshold callback adjustment: CPU +5
+        listener._handle_callback_query("cb_th", "123", 99, "th_cpu_+5")
+        self.assertEqual(tg_config["thresholds"]["temperature"]["cpu_warning"], 80)
+
+        # Test subpanels callbacks: m_thresholds, m_notifiers, m_traffic
+        listener._handle_callback_query("cb_nav1", "123", 99, "m_thresholds")
+        self.assertIn("告警预警阈值设置面板", listener._edit_message.call_args.args[2])
+
+        listener._handle_callback_query("cb_nav2", "123", 99, "m_notifiers")
+        self.assertIn("通知渠道与轮询控制面板", listener._edit_message.call_args.args[2])
+
+        listener._handle_callback_query("cb_nav3", "123", 99, "m_traffic")
+        self.assertIn("简报流量统计维度配置面板", listener._edit_message.call_args.args[2])
 
 if __name__ == "__main__":
     unittest.main()

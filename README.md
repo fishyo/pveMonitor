@@ -103,13 +103,15 @@ notifiers:
 ## 🤖 Telegram Bot 交互指令
 
 向 Telegram Bot 发送以下指令即可实现实时交互：
+- `/manage` - 🎛️ **呼出管理控制中心** (推荐！模块化可视化配置实例监控、告警阈值、通知渠道及流量维度)
+- `/start` 或 `/menu` - 呼出管理控制中心主面板
+- `/key_vms` - 直达虚拟机/容器重点监控可视化点选面板
 - `/status` - 实时拉取并回复最新简报 (仅在 Telegram 框架内回复，不触发邮件/Webhook)
 - `/temp` - 单独查询当前 CPU 包、核心及 NVMe/硬盘硬件温度
 - `/cancel` - 强行清空待处理消息队列并重置频控与排队状态
 - `/set_cpu <温度>` - 动态修改 CPU 告警阈值
 - `/set_mem <百分比>` - 动态修改内存告警比例
 - `/set_nvme <温度>` - 动态修改 NVMe 固态告警阈值
-- `/key_vms` - 查询当前重点监控的虚拟机/容器列表及开关状态
 - `/set_key_vms <ID列表>` - 动态设置重点监控实例 (如 `/set_key_vms 101,102` 或 `/set_key_vms clear` 清空列表)
 - `/add_key_vm <ID>` - 添加指定实例到重点监控 (如 `/add_key_vm 101`)
 - `/del_key_vm <ID>` - 从重点监控中移除指定实例 (如 `/del_key_vm 103`)
