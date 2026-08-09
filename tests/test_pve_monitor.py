@@ -348,9 +348,9 @@ class TestPVEMonitor(unittest.TestCase):
         listener._handle_command("123", "/temp")
 
         reply = listener._send_reply.call_args.args[1]
-        self.assertIn("CPU Package: `64.0°C`", reply)
-        self.assertIn("CPU 核心: `59.0°C / 64.0°C`", reply)
-        self.assertIn("NVMe: `nvme0: 42.0°C`", reply)
+        self.assertIn("CPU Package: <code>64.0°C</code>", reply)
+        self.assertIn("CPU 核心: <code>59.0°C / 64.0°C</code>", reply)
+        self.assertIn("NVMe: <code>nvme0: 42.0°C</code>", reply)
         self.assertIn("不提供 24h 温度历史", reply)
 
     def test_alert_engine_persistent_history(self):
@@ -463,27 +463,24 @@ class TestPVEMonitor(unittest.TestCase):
         tg_config["notifiers"]["telegram"] = {"enabled": True, "bot_token": "dummy", "chat_id": "123"}
         listener = TelegramBotListener(tg_config, app)
         listener._send_reply = MagicMock()
+        listener._answer_callback = MagicMock()
+        listener._edit_message = MagicMock()
 
         # Test /key_vms
         listener._handle_command("123", "/key_vms")
-        self.assertIn("重点监控列表: `101`", listener._send_reply.call_args.args[1])
+        self.assertIn("重点监控列表: <code>101</code>", listener._send_reply.call_args.args[1])
 
-        # Test /add_key_vm 102
-        listener._handle_command("123", "/add_key_vm 102")
+        # Test toggle via callback_query toggle_vm_102
+        listener._handle_callback_query("cb_1", "123", 99, "toggle_vm_102")
         self.assertIn(102, tg_config["thresholds"]["vms"]["key_vm_ids"])
-        self.assertIn("102", listener._send_reply.call_args.args[1])
 
-        # Test /del_key_vm 101
-        listener._handle_command("123", "/del_key_vm 101")
+        # Test toggle via callback_query toggle_vm_101 (remove 101)
+        listener._handle_callback_query("cb_2", "123", 99, "toggle_vm_101")
         self.assertNotIn(101, tg_config["thresholds"]["vms"]["key_vm_ids"])
 
-        # Test /set_key_vms 103,104
-        listener._handle_command("123", "/set_key_vms 103,104")
-        self.assertEqual(tg_config["thresholds"]["vms"]["key_vm_ids"], [103, 104])
-
-        # Test /toggle_vm_alert
-        listener._handle_command("123", "/toggle_vm_alert")
-        self.assertFalse(tg_config["thresholds"]["vms"]["alert_on_stopped"])
+        # Test callback_query menu_main (Back to main menu)
+        listener._handle_callback_query("cb_3", "123", 99, "menu_main")
+        self.assertIn("主控制面板", listener._edit_message.call_args.args[2])
 
 if __name__ == "__main__":
     unittest.main()

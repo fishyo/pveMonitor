@@ -58,12 +58,237 @@ class TelegramBotListener:
             yaml.safe_dump(new_config, f, allow_unicode=True, sort_keys=False)
         logger.info("已通过 Telegram 指令更新 config.yaml")
 
-    def _send_reply(self, chat_id: str, text: str, parse_mode: str = "Markdown"):
+    def _send_reply(self, chat_id: str, text: str, parse_mode: str = "HTML", reply_markup: dict = None):
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         try:
-            requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": parse_mode}, timeout=10)
+            requests.post(url, json=payload, timeout=10)
         except Exception as e:
             logger.error(f"Telegram 回复消息失败: {e}")
+
+    def _edit_message(self, chat_id: str, message_id: int, text: str, parse_mode: str = "HTML", reply_markup: dict = None):
+        url = f"https://api.telegram.org/bot{self.bot_token}/editMessageText"
+        payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": parse_mode}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        try:
+            requests.post(url, json=payload, timeout=10)
+        except Exception as e:
+            logger.error(f"Telegram 修改消息失败: {e}")
+
+    def _answer_callback(self, callback_query_id: str, text: str = ""):
+        url = f"https://api.telegram.org/bot{self.bot_token}/answerCallbackQuery"
+        payload = {"callback_query_id": callback_query_id, "text": text}
+        try:
+            requests.post(url, json=payload, timeout=10)
+        except Exception as e:
+            logger.error(f"Telegram 应答 callback query 失败: {e}")
+
+    def _build_main_menu(self) -> tuple[str, dict]:
+        """构建 PVE 监控 Bot 主控制面板菜单"""
+        text = (
+            "🤖 <b>Proxmox VE 监控服务主控制面板</b>\n\n"
+            "点击下方按钮进行可视化控制与配置："
+        )
+        keyboard = [
+            [
+                {"text": "📊 实时简报", "callback_data": "cmd_status"},
+                {"text": "🌡️ 硬件温度", "callback_data": "cmd_temp"}
+            ],
+            [
+                {"text": "🖥️ 实例重点监控配置", "callback_data": "menu_vms"},
+                {"text": "⚙️ 告警轮询开关", "callback_data": "cmd_toggle_alert"}
+            ],
+            [
+                {"text": "🔔 TG简报推送", "callback_data": "cmd_toggle_briefing"},
+                {"text": "📧 邮件通知开关", "callback_data": "cmd_toggle_email"}
+            ],
+            [
+                {"text": "❓ 帮助说明", "callback_data": "menu_help"},
+                {"text": "❌ 关闭菜单", "callback_data": "menu_close"}
+            ]
+        ]
+        return text, {"inline_keyboard": keyboard}
+
+    def _build_vm_menu(self) -> tuple[str, dict]:
+        """从 PVE 自动获取所有实例 ID 与名称，构建带开关与返回按钮的可视化面板"""
+        vm_cfg = self.config.get("thresholds", {}).get("vms", {})
+        alert_on = vm_cfg.get("alert_on_stopped", True)
+        key_vms = list(vm_cfg.get("key_vm_ids", []))
+
+        guests = []
+        try:
+            if hasattr(self.app, "pve_collector") and self.app.pve_collector:
+                api_data = self.app.pve_collector.collect_all()
+                all_guests = api_data.get("vms", []) + api_data.get("lxcs", [])
+                for g in all_guests:
+                    g_id = g.get("vmid") or g.get("id")
+                    if g_id is not None:
+                        g_name = g.get("name", "Unknown")
+                        g_status = g.get("status", "unknown")
+                        guests.append({"id": int(g_id), "name": g_name, "status": g_status})
+        except Exception as e:
+            logger.warning(f"从 PVE API 获取实例列表失败: {e}")
+
+        # 若 API 未能获取实例（如测试环境），从 key_vms 填充
+        if not guests and key_vms:
+            for g_id in key_vms:
+                guests.append({"id": g_id, "name": f"VM-{g_id}", "status": "unknown"})
+
+        # 去重并排序
+        seen = set()
+        unique_guests = []
+        for g in guests:
+            if g["id"] not in seen:
+                seen.add(g["id"])
+                unique_guests.append(g)
+        unique_guests.sort(key=lambda x: x["id"])
+
+        status_str = "🟢 已开启" if alert_on else "🔴 已关闭"
+        key_vms_str = ", ".join(str(x) for x in key_vms) if key_vms else "全部实例 (默认监控所有)"
+
+        text = (
+            f"🖥️ <b>PVE 实例重点监控配置面板</b>\n\n"
+            f"• 停机告警总开关: <b>{status_str}</b>\n"
+            f"• 当前重点监控列表: <code>{key_vms_str}</code>\n\n"
+            f"👇 <b>点击下方实例按钮可实时“点选/取消”重点监控</b>："
+        )
+
+        keyboard = []
+        row = []
+        for g in unique_guests:
+            g_id = g["id"]
+            g_name = g["name"]
+            is_key = g_id in key_vms
+            icon = "🟢" if is_key else "⚪"
+            btn_text = f"{icon} [{g_id}] {g_name}"
+            row.append({"text": btn_text, "callback_data": f"toggle_vm_{g_id}"})
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+
+        toggle_alert_text = "🔴 关闭停机告警" if alert_on else "🟢 开启停机告警"
+        keyboard.append([
+            {"text": f"🔔 {toggle_alert_text}", "callback_data": "vm_action_toggle_alert"},
+            {"text": "🧹 监控全部(清空列表)", "callback_data": "vm_action_clear"}
+        ])
+
+        keyboard.append([
+            {"text": "🔙 返回主菜单", "callback_data": "menu_main"},
+            {"text": "❌ 关闭菜单", "callback_data": "menu_close"}
+        ])
+
+        return text, {"inline_keyboard": keyboard}
+
+    def _get_help_text(self) -> str:
+        return (
+            "🤖 <b>PVE 监控服务 Telegram Bot 指令说明</b>:\n\n"
+            "📊 <b>可视化菜单控制</b>:\n"
+            "• /start 或 /menu - 呼出交互式主菜单\n"
+            "• /key_vms 或 /vms - 打开虚拟机/容器点选配置面板\n\n"
+            "🔍 <b>状态查询</b>:\n"
+            "• /status - 立即拉取并生成实时 PVE 简报\n"
+            "• /temp - 查看 CPU 及 NVMe 硬件实时温度\n"
+            "• /cancel - 清空积压待处理队列\n\n"
+            "⚙️ <b>命令行修改设置</b>:\n"
+            "• /set_cpu &lt;温度&gt; - 修改 CPU 告警温度 (如 /set_cpu 80)\n"
+            "• /set_mem &lt;百分比&gt; - 修改内存告警比例 (如 /set_mem 85)\n"
+            "• /set_nvme &lt;温度&gt; - 修改 NVMe 告警温度 (如 /set_nvme 65)\n"
+            "• /set_key_vms &lt;ID列表&gt; - 设置重点监控列表 (如 /set_key_vms 101,102)\n"
+            "• /add_key_vm &lt;ID&gt; / /del_key_vm &lt;ID&gt; - 手动增删监控实例"
+        )
+
+    def _handle_callback_query(self, cb_id: str, chat_id: str, msg_id: int, data: str):
+        # 安全验证
+        if self.chat_id and str(chat_id) != self.chat_id:
+            self._answer_callback(cb_id, "⛔ 未授权的操作")
+            return
+
+        if data == "menu_main":
+            self._answer_callback(cb_id)
+            text, reply_markup = self._build_main_menu()
+            self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
+
+        elif data == "menu_vms":
+            self._answer_callback(cb_id)
+            text, reply_markup = self._build_vm_menu()
+            self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
+
+        elif data == "menu_help":
+            self._answer_callback(cb_id)
+            help_msg = self._get_help_text()
+            keyboard = [[{"text": "🔙 返回主菜单", "callback_data": "menu_main"}]]
+            self._edit_message(chat_id, msg_id, help_msg, reply_markup={"inline_keyboard": keyboard})
+
+        elif data == "menu_close":
+            self._answer_callback(cb_id, "已关闭")
+            self._edit_message(chat_id, msg_id, "❌ <b>菜单已关闭</b>")
+
+        elif data.startswith("toggle_vm_"):
+            try:
+                vm_id = int(data.replace("toggle_vm_", ""))
+                vm_cfg = self.config.setdefault("thresholds", {}).setdefault("vms", {})
+                key_vms = vm_cfg.setdefault("key_vm_ids", [])
+                if vm_id in key_vms:
+                    key_vms.remove(vm_id)
+                    cb_msg = f"已将 [{vm_id}] 移除重点监控"
+                else:
+                    key_vms.append(vm_id)
+                    key_vms.sort()
+                    cb_msg = f"已将 [{vm_id}] 加入重点监控"
+                self._save_config_and_reload(self.config)
+                self._answer_callback(cb_id, cb_msg)
+                text, reply_markup = self._build_vm_menu()
+                self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
+            except Exception as e:
+                logger.error(f"处理 toggle_vm callback 失败: {e}")
+                self._answer_callback(cb_id, "操作失败")
+
+        elif data == "vm_action_toggle_alert":
+            vm_cfg = self.config.setdefault("thresholds", {}).setdefault("vms", {})
+            curr = vm_cfg.get("alert_on_stopped", True)
+            vm_cfg["alert_on_stopped"] = not curr
+            self._save_config_and_reload(self.config)
+            cb_msg = "实例停机告警已关闭" if curr else "实例停机告警已开启"
+            self._answer_callback(cb_id, cb_msg)
+            text, reply_markup = self._build_vm_menu()
+            self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
+
+        elif data == "vm_action_clear":
+            self.config.setdefault("thresholds", {}).setdefault("vms", {})["key_vm_ids"] = []
+            self._save_config_and_reload(self.config)
+            self._answer_callback(cb_id, "已重置为监控全部实例")
+            text, reply_markup = self._build_vm_menu()
+            self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
+
+        elif data == "cmd_status":
+            self._answer_callback(cb_id, "正在实时拉取简报...")
+            try:
+                brief_data = self.app.generate_briefing()
+                keyboard = [[{"text": "🔙 返回主菜单", "callback_data": "menu_main"}]]
+                self._send_reply(chat_id, brief_data["tg_html"], parse_mode="HTML", reply_markup={"inline_keyboard": keyboard})
+            except Exception as e:
+                self._send_reply(chat_id, f"❌ 采集过程出错: {e}")
+
+        elif data == "cmd_temp":
+            self._answer_callback(cb_id)
+            self._handle_command(chat_id, "/temp")
+
+        elif data == "cmd_toggle_alert":
+            self._handle_command(chat_id, "/toggle_alert")
+            self._answer_callback(cb_id)
+
+        elif data == "cmd_toggle_briefing":
+            self._handle_command(chat_id, "/toggle_briefing")
+            self._answer_callback(cb_id)
+
+        elif data == "cmd_toggle_email":
+            self._handle_command(chat_id, "/toggle_email")
+            self._answer_callback(cb_id)
 
     def _handle_command(self, chat_id: str, text: str):
         # 安全验证: 仅响应配置中的白名单 chat_id
@@ -75,76 +300,59 @@ class TelegramBotListener:
         cmd_parts = text.strip().split()
         cmd = cmd_parts[0].lower()
 
-        if cmd in ["/start", "/help"]:
-            help_msg = """🤖 **PVE 监控服务 Telegram Bot 指令列表**:
+        if cmd in ["/start", "/menu"]:
+            text, reply_markup = self._build_main_menu()
+            self._send_reply(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
 
-📊 **查询与控制类指令**:
-• `/status` - 立即触发一次实时 PVE 状态简报 (仅 Telegram 框架内回复)
-• `/temp` - 单独查询当前硬件温度
-• `/key_vms` - 查询当前重点监控的虚拟机/容器列表及开关状态
-• `/cancel` - 强行清空所有积压的历史指令并重置排队状态
-• `/help` - 显示帮助列表
+        elif cmd in ["/help"]:
+            help_msg = self._get_help_text()
+            keyboard = [[{"text": "🔙 返回主菜单", "callback_data": "menu_main"}]]
+            self._send_reply(chat_id, help_msg, parse_mode="HTML", reply_markup={"inline_keyboard": keyboard})
 
-⚙️ **参数修改指令**:
-• `/set_cpu <温度>` - 动态修改 CPU 告警温度 (如 `/set_cpu 80`)
-• `/set_mem <百分比>` - 动态修改内存告警比例 (如 `/set_mem 85`)
-• `/set_nvme <温度>` - 动态修改 NVMe 固态告警温度 (如 `/set_nvme 65`)
-• `/set_key_vms <ID列表>` - 动态设置重点监控实例 (如 `/set_key_vms 101,102`)
-• `/add_key_vm <ID>` - 添加指定实例到重点监控 (如 `/add_key_vm 101`)
-• `/del_key_vm <ID>` - 从重点监控中移除指定实例 (如 `/del_key_vm 103`)
-
-🌐 **流量维度开关指令**:
-• `/toggle_daily` - 开启 / 关闭 24h 日流量统计
-• `/toggle_weekly` - 开启 / 关闭 7d 周流量统计
-• `/toggle_monthly` - 开启 / 关闭 30d 月流量统计
-• `/toggle_total` - 开启 / 关闭 开机至今总流量统计
-
-🔘 **通知开关指令**:
-• `/toggle_briefing` - 开启 / 关闭 Telegram 定时简报推送
-• `/toggle_email` - 一键开启 / 关闭邮件通知
-• `/toggle_alert` - 一键暂停 / 恢复异常告警
-• `/toggle_vm_alert` - 一键开启 / 关闭实例停机告警
-"""
-            self._send_reply(chat_id, help_msg)
+        elif cmd in ["/key_vms", "/get_key_vms", "/vms", "/edit_vms"]:
+            text, reply_markup = self._build_vm_menu()
+            self._send_reply(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
 
         elif cmd in ["/cancel", "/clear", "/stop_queue"]:
             self.last_status_time = 0
             self._flush_old_updates()
             self._send_reply(
                 chat_id,
-                "🧹 **已成功清空 Telegram 待处理消息队列！**\n"
-                "所有积压的历史指令已丢弃，频控限制已解开，Bot 已恢复全新就绪状态。"
+                "🧹 <b>已成功清空 Telegram 待处理消息队列！</b>\n"
+                "所有积压的历史指令已丢弃，频控限制已解开，Bot 已恢复全新就绪状态。",
+                parse_mode="HTML"
             )
 
         elif cmd in ["/status", "/pve"]:
             now = time.time()
             if now - self.last_status_time < 15:
-                self._send_reply(chat_id, "⚠️ 简报生成请求过于频繁，请稍后再试。")
+                self._send_reply(chat_id, "⚠️ 简报生成请求过于频繁，请稍后再试。", parse_mode="HTML")
                 return
             self.last_status_time = now
-            self._send_reply(chat_id, "🔄 正在为您实时采集 PVE 节点数据，请稍候...")
+            self._send_reply(chat_id, "🔄 正在为您实时采集 PVE 节点数据，请稍候...", parse_mode="HTML")
             try:
                 brief_data = self.app.generate_briefing()
-                self._send_reply(chat_id, brief_data["tg_html"], parse_mode="HTML")
+                keyboard = [[{"text": "🔙 返回主菜单", "callback_data": "menu_main"}]]
+                self._send_reply(chat_id, brief_data["tg_html"], parse_mode="HTML", reply_markup={"inline_keyboard": keyboard})
             except Exception as e:
-                self._send_reply(chat_id, f"❌ 采集过程出错: {e}")
+                self._send_reply(chat_id, f"❌ 采集过程出错: {e}", parse_mode="HTML")
 
         elif cmd in ["/temp", "/temperature"]:
             try:
                 temps = self.app.hw_collector.get_temperatures()
-                lines = ["🌡️ **实时硬件温度**"]
+                lines = ["🌡️ <b>实时硬件温度</b>"]
 
                 cpu_temp = temps.get("cpu_temp")
                 lines.append(
-                    f"• CPU Package: `{cpu_temp:.1f}°C`"
+                    f"• CPU Package: <code>{cpu_temp:.1f}°C</code>"
                     if isinstance(cpu_temp, (int, float))
-                    else "• CPU Package: `未检测到`"
+                    else "• CPU Package: <code>未检测到</code>"
                 )
 
                 cpu_cores = temps.get("cpu_cores", [])
                 if cpu_cores:
                     core_values = " / ".join(f"{value:.1f}°C" for value in cpu_cores)
-                    lines.append(f"• CPU 核心: `{core_values}`")
+                    lines.append(f"• CPU 核心: <code>{core_values}</code>")
 
                 for label, key in [("NVMe", "nvme_temps"), ("硬盘", "hdd_temps")]:
                     devices = temps.get(key, {})
@@ -155,13 +363,14 @@ class TelegramBotListener:
                             if isinstance(value, (int, float))
                         )
                         if values:
-                            lines.append(f"• {label}: `{values}`")
+                            lines.append(f"• {label}: <code>{values}</code>")
 
-                lines.append("\n_温度为当前快照，PVE RRD 不提供 24h 温度历史。_")
-                self._send_reply(chat_id, "\n".join(lines))
+                lines.append("\n<i>温度为当前快照，PVE RRD 不提供 24h 温度历史。</i>")
+                keyboard = [[{"text": "🔙 返回主菜单", "callback_data": "menu_main"}]]
+                self._send_reply(chat_id, "\n".join(lines), parse_mode="HTML", reply_markup={"inline_keyboard": keyboard})
             except Exception as e:
                 logger.error(f"实时温度采集失败: {e}")
-                self._send_reply(chat_id, "❌ 温度采集失败，请检查容器的传感器访问权限。")
+                self._send_reply(chat_id, "❌ 温度采集失败，请检查容器的传感器访问权限。", parse_mode="HTML")
 
         elif cmd == "/toggle_daily":
             tr_cfg = self.config.setdefault("traffic", {})
@@ -169,7 +378,7 @@ class TelegramBotListener:
             tr_cfg["show_daily"] = not curr
             self._save_config_and_reload(self.config)
             status_str = "🟢 已开启" if not curr else "🔴 已关闭"
-            self._send_reply(chat_id, f"🌐 **流量维度变更**: 24h 日流量统计已切换为 **{status_str}**！")
+            self._send_reply(chat_id, f"🌐 <b>流量维度变更</b>: 24h 日流量统计已切换为 <b>{status_str}</b>！", parse_mode="HTML")
 
         elif cmd == "/toggle_weekly":
             tr_cfg = self.config.setdefault("traffic", {})
@@ -177,7 +386,7 @@ class TelegramBotListener:
             tr_cfg["show_weekly"] = not curr
             self._save_config_and_reload(self.config)
             status_str = "🟢 已开启" if not curr else "🔴 已关闭"
-            self._send_reply(chat_id, f"🌐 **流量维度变更**: 7d 周流量统计已切换为 **{status_str}**！")
+            self._send_reply(chat_id, f"🌐 <b>流量维度变更</b>: 7d 周流量统计已切换为 <b>{status_str}</b>！", parse_mode="HTML")
 
         elif cmd == "/toggle_monthly":
             tr_cfg = self.config.setdefault("traffic", {})
@@ -185,7 +394,7 @@ class TelegramBotListener:
             tr_cfg["show_monthly"] = not curr
             self._save_config_and_reload(self.config)
             status_str = "🟢 已开启" if not curr else "🔴 已关闭"
-            self._send_reply(chat_id, f"🌐 **流量维度变更**: 30d 月流量统计已切换为 **{status_str}**！")
+            self._send_reply(chat_id, f"🌐 <b>流量维度变更</b>: 30d 月流量统计已切换为 <b>{status_str}</b>！", parse_mode="HTML")
 
         elif cmd == "/toggle_total":
             tr_cfg = self.config.setdefault("traffic", {})
@@ -193,7 +402,7 @@ class TelegramBotListener:
             tr_cfg["show_total"] = not curr
             self._save_config_and_reload(self.config)
             status_str = "🟢 已开启" if not curr else "🔴 已关闭"
-            self._send_reply(chat_id, f"🌐 **流量维度变更**: 开机累计总流量统计已切换为 **{status_str}**！")
+            self._send_reply(chat_id, f"🌐 <b>流量维度变更</b>: 开机累计总流量统计已切换为 <b>{status_str}</b>！", parse_mode="HTML")
 
         elif cmd in ["/toggle_briefing", "/toggle_tg_briefing"]:
             tg_cfg = self.config.setdefault("notifiers", {}).setdefault("telegram", {})
@@ -202,7 +411,7 @@ class TelegramBotListener:
             self._save_config_and_reload(self.config)
             self.app.notifier_mgr._init_notifiers()
             status_str = "🟢 已开启" if not curr else "🔴 已关闭"
-            self._send_reply(chat_id, f"🔔 **通知开关变更**: Telegram 定时简报推送已切换为 **{status_str}**！")
+            self._send_reply(chat_id, f"🔔 <b>通知开关变更</b>: Telegram 定时简报推送已切换为 <b>{status_str}</b>！", parse_mode="HTML")
 
         elif cmd == "/toggle_email":
             email_cfg = self.config.setdefault("notifiers", {}).setdefault("email", {})
@@ -211,7 +420,7 @@ class TelegramBotListener:
             self._save_config_and_reload(self.config)
             self.app.notifier_mgr._init_notifiers()
             status_str = "🟢 已开启" if not curr else "🔴 已关闭"
-            self._send_reply(chat_id, f"🔔 **通知开关变更**: 邮件通知已切换为 **{status_str}**！")
+            self._send_reply(chat_id, f"🔔 <b>通知开关变更</b>: 邮件通知已切换为 <b>{status_str}</b>！", parse_mode="HTML")
 
         elif cmd == "/toggle_alert":
             alert_interval = self.config.setdefault("schedule", {}).get("alert_interval_seconds", 120)
@@ -225,34 +434,34 @@ class TelegramBotListener:
                 status_str = "🟢 已恢复 (每 2 分钟轮询一次)"
             self._save_config_and_reload(self.config)
             self.app.update_alert_job_interval(new_sec)
-            self._send_reply(chat_id, f"⚠️ <b>告警引擎状态</b>: 异常告警已切换为 <b>{status_str}</b>！")
+            self._send_reply(chat_id, f"⚠️ <b>告警引擎状态</b>: 异常告警已切换为 <b>{status_str}</b>！", parse_mode="HTML")
 
         elif cmd == "/set_cpu":
             if len(cmd_parts) > 1 and cmd_parts[1].isdigit():
                 val = int(cmd_parts[1])
                 self.config.setdefault("thresholds", {}).setdefault("temperature", {})["cpu_warning"] = val
                 self._save_config_and_reload(self.config)
-                self._send_reply(chat_id, f"✅ **成功调整参数**: CPU 告警阈值已修改为 **{val}°C**！")
+                self._send_reply(chat_id, f"✅ <b>成功调整参数</b>: CPU 告警阈值已修改为 <b>{val}°C</b>！", parse_mode="HTML")
             else:
-                self._send_reply(chat_id, "⚠️ 格式错误，用法示例: `/set_cpu 80`")
+                self._send_reply(chat_id, "⚠️ 格式错误，用法示例: <code>/set_cpu 80</code>", parse_mode="HTML")
 
         elif cmd == "/set_mem":
             if len(cmd_parts) > 1 and cmd_parts[1].isdigit():
                 val = int(cmd_parts[1])
                 self.config.setdefault("thresholds", {}).setdefault("memory", {})["usage_percent_warning"] = val
                 self._save_config_and_reload(self.config)
-                self._send_reply(chat_id, f"✅ **成功调整参数**: 物理内存告警阈值已修改为 **{val}%**！")
+                self._send_reply(chat_id, f"✅ <b>成功调整参数</b>: 物理内存告警阈值已修改为 <b>{val}%</b>！", parse_mode="HTML")
             else:
-                self._send_reply(chat_id, "⚠️ 格式错误，用法示例: `/set_mem 85`")
+                self._send_reply(chat_id, "⚠️ 格式错误，用法示例: <code>/set_mem 85</code>", parse_mode="HTML")
 
         elif cmd == "/set_nvme":
             if len(cmd_parts) > 1 and cmd_parts[1].isdigit():
                 val = int(cmd_parts[1])
                 self.config.setdefault("thresholds", {}).setdefault("temperature", {})["nvme_warning"] = val
                 self._save_config_and_reload(self.config)
-                self._send_reply(chat_id, f"✅ **成功调整参数**: NVMe 告警阈值已修改为 **{val}°C**！")
+                self._send_reply(chat_id, f"✅ <b>成功调整参数</b>: NVMe 告警阈值已修改为 <b>{val}°C</b>！", parse_mode="HTML")
             else:
-                self._send_reply(chat_id, "⚠️ 格式错误，用法示例: `/set_nvme 65`")
+                self._send_reply(chat_id, "⚠️ 格式错误，用法示例: <code>/set_nvme 65</code>", parse_mode="HTML")
 
         elif cmd in ["/toggle_vm_alert", "/toggle_vms"]:
             vm_cfg = self.config.setdefault("thresholds", {}).setdefault("vms", {})
@@ -260,20 +469,7 @@ class TelegramBotListener:
             vm_cfg["alert_on_stopped"] = not curr
             self._save_config_and_reload(self.config)
             status_str = "🟢 已开启" if not curr else "🔴 已关闭"
-            self._send_reply(chat_id, f"🖥️ **告警设置变更**: 虚拟机/容器停机告警已切换为 **{status_str}**！")
-
-        elif cmd in ["/key_vms", "/get_key_vms"]:
-            vm_cfg = self.config.get("thresholds", {}).get("vms", {})
-            alert_on = vm_cfg.get("alert_on_stopped", True)
-            key_vms = vm_cfg.get("key_vm_ids", [])
-            status_str = "🟢 开启" if alert_on else "🔴 关闭"
-            vms_str = ", ".join(str(x) for x in key_vms) if key_vms else "全部实例 (默认监控所有)"
-            msg = (
-                f"🖥️ **虚拟机/容器重点监控状态**:\n"
-                f"• 停机告警开关: **{status_str}**\n"
-                f"• 重点监控列表: `{vms_str}`"
-            )
-            self._send_reply(chat_id, msg)
+            self._send_reply(chat_id, f"🖥️ <b>告警设置变更</b>: 虚拟机/容器停机告警已切换为 <b>{status_str}</b>！", parse_mode="HTML")
 
         elif cmd == "/set_key_vms":
             if len(cmd_parts) > 1:
@@ -286,9 +482,9 @@ class TelegramBotListener:
                 self.config.setdefault("thresholds", {}).setdefault("vms", {})["key_vm_ids"] = new_vms
                 self._save_config_and_reload(self.config)
                 vms_str = ", ".join(str(x) for x in new_vms) if new_vms else "全部实例 (默认监控所有)"
-                self._send_reply(chat_id, f"✅ **成功调整参数**: 重点监控实例列表已更新为: `{vms_str}`！")
+                self._send_reply(chat_id, f"✅ <b>成功调整参数</b>: 重点监控实例列表已更新为: <code>{vms_str}</code>！", parse_mode="HTML")
             else:
-                self._send_reply(chat_id, "⚠️ 格式错误，用法示例: `/set_key_vms 101,102` 或 `/set_key_vms clear` 清空列表")
+                self._send_reply(chat_id, "⚠️ 格式错误，用法示例: <code>/set_key_vms 101,102</code> 或 <code>/set_key_vms clear</code> 清空列表", parse_mode="HTML")
 
         elif cmd == "/add_key_vm":
             if len(cmd_parts) > 1 and cmd_parts[1].isdigit():
@@ -299,11 +495,11 @@ class TelegramBotListener:
                     key_vms.append(val)
                     key_vms.sort()
                     self._save_config_and_reload(self.config)
-                    self._send_reply(chat_id, f"✅ **成功添加**: 实例 `{val}` 已加入重点监控列表！当前列表: `{key_vms}`")
+                    self._send_reply(chat_id, f"✅ <b>成功添加</b>: 实例 <code>{val}</code> 已加入重点监控列表！当前列表: <code>{key_vms}</code>", parse_mode="HTML")
                 else:
-                    self._send_reply(chat_id, f"ℹ️ 实例 `{val}` 已在重点监控列表中。")
+                    self._send_reply(chat_id, f"ℹ️ 实例 <code>{val}</code> 已在重点监控列表中。", parse_mode="HTML")
             else:
-                self._send_reply(chat_id, "⚠️ 格式错误，用法示例: `/add_key_vm 101`")
+                self._send_reply(chat_id, "⚠️ 格式错误，用法示例: <code>/add_key_vm 101</code>", parse_mode="HTML")
 
         elif cmd == "/del_key_vm":
             if len(cmd_parts) > 1 and cmd_parts[1].isdigit():
@@ -314,11 +510,11 @@ class TelegramBotListener:
                     key_vms.remove(val)
                     self._save_config_and_reload(self.config)
                     vms_str = ", ".join(str(x) for x in key_vms) if key_vms else "全部实例 (默认监控所有)"
-                    self._send_reply(chat_id, f"✅ **成功移除**: 实例 `{val}` 已从重点监控列表移除！当前列表: `{vms_str}`")
+                    self._send_reply(chat_id, f"✅ <b>成功移除</b>: 实例 <code>{val}</code> 已从重点监控列表移除！当前列表: <code>{vms_str}</code>", parse_mode="HTML")
                 else:
-                    self._send_reply(chat_id, f"ℹ️ 实例 `{val}` 不在重点监控列表中。")
+                    self._send_reply(chat_id, f"ℹ️ 实例 <code>{val}</code> 不在重点监控列表中。", parse_mode="HTML")
             else:
-                self._send_reply(chat_id, "⚠️ 格式错误，用法示例: `/del_key_vm 103`")
+                self._send_reply(chat_id, "⚠️ 格式错误，用法示例: <code>/del_key_vm 103</code>", parse_mode="HTML")
 
     def _poll_updates(self):
         url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
@@ -329,9 +525,26 @@ class TelegramBotListener:
                     updates = resp.json().get("result", [])
                     for update in updates:
                         self.offset = update["update_id"] + 1
+
+                        # 1. 响应按钮点击 (callback_query)
+                        if "callback_query" in update:
+                            cb = update["callback_query"]
+                            cb_id = cb.get("id")
+                            msg = cb.get("message", {})
+                            chat_id = msg.get("chat", {}).get("id")
+                            msg_id = msg.get("message_id")
+                            data = cb.get("data", "")
+                            if chat_id and data:
+                                threading.Thread(
+                                    target=self._handle_callback_query,
+                                    args=(cb_id, chat_id, msg_id, data),
+                                    daemon=True
+                                ).start()
+                            continue
+
+                        # 2. 响应文本消息指令 (message)
                         msg = update.get("message", {})
                         msg_date = msg.get("date", 0)
-                        # 过滤掉启动前收到的离线旧消息 (允许 10 秒时钟偏差)
                         if self.start_time and msg_date and msg_date < (self.start_time - 10):
                             logger.info(f"跳过 Telegram 历史待处理消息 (date: {msg_date})")
                             continue
