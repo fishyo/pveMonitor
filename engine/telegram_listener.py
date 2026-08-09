@@ -81,6 +81,7 @@ class TelegramBotListener:
 📊 **查询与控制类指令**:
 • `/status` - 立即触发一次实时 PVE 状态简报 (仅 Telegram 框架内回复)
 • `/temp` - 单独查询当前硬件温度
+• `/key_vms` - 查询当前重点监控的虚拟机/容器列表及开关状态
 • `/cancel` - 强行清空所有积压的历史指令并重置排队状态
 • `/help` - 显示帮助列表
 
@@ -88,6 +89,9 @@ class TelegramBotListener:
 • `/set_cpu <温度>` - 动态修改 CPU 告警温度 (如 `/set_cpu 80`)
 • `/set_mem <百分比>` - 动态修改内存告警比例 (如 `/set_mem 85`)
 • `/set_nvme <温度>` - 动态修改 NVMe 固态告警温度 (如 `/set_nvme 65`)
+• `/set_key_vms <ID列表>` - 动态设置重点监控实例 (如 `/set_key_vms 101,102`)
+• `/add_key_vm <ID>` - 添加指定实例到重点监控 (如 `/add_key_vm 101`)
+• `/del_key_vm <ID>` - 从重点监控中移除指定实例 (如 `/del_key_vm 103`)
 
 🌐 **流量维度开关指令**:
 • `/toggle_daily` - 开启 / 关闭 24h 日流量统计
@@ -99,6 +103,7 @@ class TelegramBotListener:
 • `/toggle_briefing` - 开启 / 关闭 Telegram 定时简报推送
 • `/toggle_email` - 一键开启 / 关闭邮件通知
 • `/toggle_alert` - 一键暂停 / 恢复异常告警
+• `/toggle_vm_alert` - 一键开启 / 关闭实例停机告警
 """
             self._send_reply(chat_id, help_msg)
 
@@ -248,6 +253,72 @@ class TelegramBotListener:
                 self._send_reply(chat_id, f"✅ **成功调整参数**: NVMe 告警阈值已修改为 **{val}°C**！")
             else:
                 self._send_reply(chat_id, "⚠️ 格式错误，用法示例: `/set_nvme 65`")
+
+        elif cmd in ["/toggle_vm_alert", "/toggle_vms"]:
+            vm_cfg = self.config.setdefault("thresholds", {}).setdefault("vms", {})
+            curr = vm_cfg.get("alert_on_stopped", True)
+            vm_cfg["alert_on_stopped"] = not curr
+            self._save_config_and_reload(self.config)
+            status_str = "🟢 已开启" if not curr else "🔴 已关闭"
+            self._send_reply(chat_id, f"🖥️ **告警设置变更**: 虚拟机/容器停机告警已切换为 **{status_str}**！")
+
+        elif cmd in ["/key_vms", "/get_key_vms"]:
+            vm_cfg = self.config.get("thresholds", {}).get("vms", {})
+            alert_on = vm_cfg.get("alert_on_stopped", True)
+            key_vms = vm_cfg.get("key_vm_ids", [])
+            status_str = "🟢 开启" if alert_on else "🔴 关闭"
+            vms_str = ", ".join(str(x) for x in key_vms) if key_vms else "全部实例 (默认监控所有)"
+            msg = (
+                f"🖥️ **虚拟机/容器重点监控状态**:\n"
+                f"• 停机告警开关: **{status_str}**\n"
+                f"• 重点监控列表: `{vms_str}`"
+            )
+            self._send_reply(chat_id, msg)
+
+        elif cmd == "/set_key_vms":
+            if len(cmd_parts) > 1:
+                raw_arg = " ".join(cmd_parts[1:])
+                if raw_arg.lower() in ["none", "clear", "all", "空", "清空"]:
+                    new_vms = []
+                else:
+                    items = raw_arg.replace(",", " ").split()
+                    new_vms = [int(x) for x in items if x.isdigit()]
+                self.config.setdefault("thresholds", {}).setdefault("vms", {})["key_vm_ids"] = new_vms
+                self._save_config_and_reload(self.config)
+                vms_str = ", ".join(str(x) for x in new_vms) if new_vms else "全部实例 (默认监控所有)"
+                self._send_reply(chat_id, f"✅ **成功调整参数**: 重点监控实例列表已更新为: `{vms_str}`！")
+            else:
+                self._send_reply(chat_id, "⚠️ 格式错误，用法示例: `/set_key_vms 101,102` 或 `/set_key_vms clear` 清空列表")
+
+        elif cmd == "/add_key_vm":
+            if len(cmd_parts) > 1 and cmd_parts[1].isdigit():
+                val = int(cmd_parts[1])
+                vm_cfg = self.config.setdefault("thresholds", {}).setdefault("vms", {})
+                key_vms = vm_cfg.setdefault("key_vm_ids", [])
+                if val not in key_vms:
+                    key_vms.append(val)
+                    key_vms.sort()
+                    self._save_config_and_reload(self.config)
+                    self._send_reply(chat_id, f"✅ **成功添加**: 实例 `{val}` 已加入重点监控列表！当前列表: `{key_vms}`")
+                else:
+                    self._send_reply(chat_id, f"ℹ️ 实例 `{val}` 已在重点监控列表中。")
+            else:
+                self._send_reply(chat_id, "⚠️ 格式错误，用法示例: `/add_key_vm 101`")
+
+        elif cmd == "/del_key_vm":
+            if len(cmd_parts) > 1 and cmd_parts[1].isdigit():
+                val = int(cmd_parts[1])
+                vm_cfg = self.config.setdefault("thresholds", {}).setdefault("vms", {})
+                key_vms = vm_cfg.get("key_vm_ids", [])
+                if val in key_vms:
+                    key_vms.remove(val)
+                    self._save_config_and_reload(self.config)
+                    vms_str = ", ".join(str(x) for x in key_vms) if key_vms else "全部实例 (默认监控所有)"
+                    self._send_reply(chat_id, f"✅ **成功移除**: 实例 `{val}` 已从重点监控列表移除！当前列表: `{vms_str}`")
+                else:
+                    self._send_reply(chat_id, f"ℹ️ 实例 `{val}` 不在重点监控列表中。")
+            else:
+                self._send_reply(chat_id, "⚠️ 格式错误，用法示例: `/del_key_vm 103`")
 
     def _poll_updates(self):
         url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"

@@ -109,6 +109,11 @@ notifiers:
 - `/set_cpu <温度>` - 动态修改 CPU 告警阈值
 - `/set_mem <百分比>` - 动态修改内存告警比例
 - `/set_nvme <温度>` - 动态修改 NVMe 固态告警阈值
+- `/key_vms` - 查询当前重点监控的虚拟机/容器列表及开关状态
+- `/set_key_vms <ID列表>` - 动态设置重点监控实例 (如 `/set_key_vms 101,102` 或 `/set_key_vms clear` 清空列表)
+- `/add_key_vm <ID>` - 添加指定实例到重点监控 (如 `/add_key_vm 101`)
+- `/del_key_vm <ID>` - 从重点监控中移除指定实例 (如 `/del_key_vm 103`)
+- `/toggle_vm_alert` - 一键开启 / 关闭虚拟机/容器停机告警
 - `/toggle_alert` - 动态暂停 / 恢复后台告警轮询
 - `/toggle_briefing` - 动态开启 / 关闭 Telegram 定时简报自动推送
 - `/toggle_daily` - 开关简报 24h 流量统计

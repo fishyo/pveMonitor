@@ -456,5 +456,34 @@ class TestPVEMonitor(unittest.TestCase):
         app.notifier_mgr._init_notifiers.assert_called_once()
         self.assertIn("🔴 已关闭", listener._send_reply.call_args.args[1])
 
+    @patch("engine.telegram_listener.TelegramBotListener._save_config_and_reload")
+    def test_telegram_key_vm_commands(self, mock_save):
+        app = MagicMock()
+        tg_config = dict(self.config)
+        tg_config["notifiers"]["telegram"] = {"enabled": True, "bot_token": "dummy", "chat_id": "123"}
+        listener = TelegramBotListener(tg_config, app)
+        listener._send_reply = MagicMock()
+
+        # Test /key_vms
+        listener._handle_command("123", "/key_vms")
+        self.assertIn("重点监控列表: `101`", listener._send_reply.call_args.args[1])
+
+        # Test /add_key_vm 102
+        listener._handle_command("123", "/add_key_vm 102")
+        self.assertIn(102, tg_config["thresholds"]["vms"]["key_vm_ids"])
+        self.assertIn("102", listener._send_reply.call_args.args[1])
+
+        # Test /del_key_vm 101
+        listener._handle_command("123", "/del_key_vm 101")
+        self.assertNotIn(101, tg_config["thresholds"]["vms"]["key_vm_ids"])
+
+        # Test /set_key_vms 103,104
+        listener._handle_command("123", "/set_key_vms 103,104")
+        self.assertEqual(tg_config["thresholds"]["vms"]["key_vm_ids"], [103, 104])
+
+        # Test /toggle_vm_alert
+        listener._handle_command("123", "/toggle_vm_alert")
+        self.assertFalse(tg_config["thresholds"]["vms"]["alert_on_stopped"])
+
 if __name__ == "__main__":
     unittest.main()
