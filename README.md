@@ -84,6 +84,7 @@ thresholds:
 notifiers:
   email:
     enabled: false
+    theme: "newspaper"         # 简报主题风格: newspaper (复古报纸, 默认), nordic (北欧暖纸), apple (现代灰白)
     smtp_host: "smtp.example.com"
     smtp_port: 465
     use_ssl: true
@@ -107,14 +108,21 @@ notifiers:
 
 支持通过环境变量覆盖敏感凭据：`PVE_HOST`、`PVE_PASSWORD`、`TG_BOT_TOKEN`、`TG_CHAT_ID`、`SMTP_PASSWORD`。
 
-## Telegram Bot 指令
+## Telegram Bot 指令与交互式面板
 
 | 指令 | 说明 |
 | :--- | :--- |
-| `/manage` 或 `/menu` | 打开管理控制面板（阈值、实例监控、通知渠道开关） |
+| `/manage` 或 `/menu` | **打开核心交互式控制面板**（实时状态看板、各模块点选配置与一键测试） |
+| `/theme` | **打开邮件视觉主题切换面板**（一键切换复古报纸、北欧暖纸、现代灰白） |
+| `/set_theme <主题>` | 设置邮件主题风格（支持：`newspaper`、`nordic`、`apple`） |
 | `/status` | 实时拉取并回复当前节点与虚拟机运行状态简报 |
 | `/temp` | 查看实时硬件温度（CPU Package/核心、NVMe/磁盘） |
-| `/key_vms` | 实例监控点选菜单 |
+| `/key_vms` 或 `/vms` | 实例监控点选菜单（点选按钮实时加入/移出重点监控） |
+| `/notifiers` | 通知渠道与告警引擎开关面板（TG / 邮件 / Webhook / 轮询） |
+| `/thresholds` | 告警预警阈值调节面板（CPU / NVMe / 内存增减调节） |
+| `/traffic` | 流量统计维度显示配置面板（日 / 周 / 月 / 累计总流量） |
+| `/test_briefing` | 手动触发向所有启用的通知渠道广播一次测试简报 |
+| `/test_alert` | 手动触发向所有启用的通知渠道广播一次连通性测试告警 |
 | `/set_cpu <温度>` | 设置 CPU 告警阈值（例：`/set_cpu 75`） |
 | `/set_nvme <温度>` | 设置 NVMe 告警阈值（例：`/set_nvme 60`） |
 | `/set_mem <百分比>` | 设置内存告警阈值（例：`/set_mem 90`） |
@@ -123,6 +131,8 @@ notifiers:
 | `/del_key_vm <ID>` | 从重点监控列表中移除指定实例 |
 | `/toggle_alert` | 暂停或恢复后台告警轮询 |
 | `/toggle_briefing` | 开启或关闭 Telegram 定时简报推送 |
+| `/toggle_email` | 开启或关闭邮件通知 |
+| `/toggle_webhook` | 开启或关闭 Webhook 通知 |
 | `/cancel` | 清空 Telegram 消息队列积压并重置限频计数器 |
 
 ## 常用测试命令

@@ -119,34 +119,104 @@ class TelegramBotListener:
         node_name = self.config.get("pve", {}).get("node_name", "pve")
         alert_interval = self.config.get("schedule", {}).get("alert_interval_seconds", 120)
         alert_status = f"🟢 轮询中 ({alert_interval}s)" if alert_interval > 0 else "🔴 已暂停"
+
         key_vms = self.config.get("thresholds", {}).get("vms", {}).get("key_vm_ids", [])
-        key_vms_count = f"{len(key_vms)} 个实例" if key_vms else "全部 (未指定)"
+        if key_vms:
+            key_vms_preview = ", ".join(str(x) for x in key_vms[:4])
+            if len(key_vms) > 4:
+                key_vms_preview += "..."
+            key_vms_count = f"{len(key_vms)} 个实例 ({key_vms_preview})"
+        else:
+            key_vms_count = "全部实例 (全量监控)"
+
+        email_theme = self.config.get("notifiers", {}).get("email", {}).get("theme", "newspaper")
+        theme_names = {
+            "newspaper": "📰 复古报纸",
+            "nordic": "🌲 北欧暖纸",
+            "apple": "🍎 现代灰白"
+        }
+        theme_display = theme_names.get(email_theme, f"🎨 {email_theme}")
+
+        n_cfg = self.config.get("notifiers", {})
+        tg_on = "🟢" if n_cfg.get("telegram", {}).get("briefing_enabled", True) else "🔴"
+        em_on = "🟢" if n_cfg.get("email", {}).get("enabled", False) else "🔴"
+        wh_on = "🟢" if n_cfg.get("webhook", {}).get("enabled", False) else "🔴"
+        channels_summary = f"TG {tg_on} | 邮件 {em_on} | Webhook {wh_on}"
+
+        th = self.config.get("thresholds", {})
+        cpu_w = th.get("temperature", {}).get("cpu_warning", 75)
+        nvme_w = th.get("temperature", {}).get("nvme_warning", 60)
+        mem_w = th.get("memory", {}).get("usage_percent_warning", 90)
+        th_summary = f"CPU {cpu_w}°C | NVMe {nvme_w}°C | 内存 {mem_w}%"
 
         text = (
-            f"🎛️ <b>Proxmox VE 监控服务 · 管理中心 (/manage)</b>\n\n"
-            f"📍 <b>节点名称</b>: <code>{node_name}</code>\n"
+            f"🎛️ <b>Proxmox VE 监控服务 · 交互式管理中心 (/manage)</b>\n\n"
+            f"📍 <b>宿主节点</b>: <code>{node_name}</code>\n"
             f"⚠️ <b>告警引擎</b>: <code>{alert_status}</code>\n"
+            f"🎨 <b>邮件主题</b>: <code>{theme_display}</code>\n"
+            f"🔔 <b>通知渠道</b>: <code>{channels_summary}</code>\n"
+            f"⚙️ <b>告警阈值</b>: <code>{th_summary}</code>\n"
             f"🖥️ <b>重点监控</b>: <code>{key_vms_count}</code>\n\n"
-            f"点击下方按钮进行模块化配置与诊断："
+            f"👇 <b>请点击下方交互式按钮进行配置与测试</b>："
         )
         keyboard = [
             [
-                {"text": "🖥️ 实例监控点选", "callback_data": "m_vms"},
-                {"text": "⚙️ 告警阈值配置", "callback_data": "m_thresholds"}
+                {"text": "🎨 邮件主题切换", "callback_data": "m_themes"},
+                {"text": "🖥️ 实例监控点选", "callback_data": "m_vms"}
             ],
             [
-                {"text": "🔔 通知开关控制", "callback_data": "m_notifiers"},
-                {"text": "🌐 流量维度设置", "callback_data": "m_traffic"}
+                {"text": "⚙️ 告警阈值调节", "callback_data": "m_thresholds"},
+                {"text": "🔔 通知渠道开关", "callback_data": "m_notifiers"}
+            ],
+            [
+                {"text": "🌐 流量统计维度", "callback_data": "m_traffic"},
+                {"text": "🔄 刷新管理面板", "callback_data": "act_refresh"}
+            ],
+            [
+                {"text": "📤 触发测试简报", "callback_data": "act_test_briefing"},
+                {"text": "🚨 广播测试告警", "callback_data": "act_test_alert"}
             ],
             [
                 {"text": "📊 实时简报快照", "callback_data": "cmd_status"},
                 {"text": "🌡️ 硬件温度快照", "callback_data": "cmd_temp"}
             ],
             [
-                {"text": "❓ 帮助指南", "callback_data": "m_help"},
-                {"text": "❌ 关闭管理中心", "callback_data": "m_close"}
+                {"text": "❓ 指南帮助", "callback_data": "m_help"},
+                {"text": "❌ 关闭面板", "callback_data": "m_close"}
             ]
         ]
+        return text, {"inline_keyboard": keyboard}
+
+    def _build_themes_menu(self) -> tuple[str, dict]:
+        """Build email briefing theme selection menu."""
+        email_cfg = self.config.get("notifiers", {}).get("email", {})
+        curr_theme = email_cfg.get("theme", "newspaper").lower()
+
+        themes = [
+            ("newspaper", "📰 复古报纸 (Newspaper)", "复古纸张底色与双栏报刊排版，沉浸阅读感"),
+            ("nordic", "🌲 北欧暖纸 (Nordic)", "柔和护眼莫兰迪大地色系，精致杂志卡片风"),
+            ("apple", "🍎 现代灰白 (Apple)", "极简苹果毛玻璃质感，克制现代科技美学"),
+        ]
+
+        theme_desc_lines = []
+        keyboard = []
+        for code, label, desc in themes:
+            is_active = (curr_theme == code)
+            status_icon = "✅ " if is_active else "⚪ "
+            theme_desc_lines.append(f"• <b>{label}</b> {'(当前生效)' if is_active else ''}\n  <i>{desc}</i>")
+            keyboard.append([{"text": f"{status_icon}{label}", "callback_data": f"theme_{code}"}])
+
+        text = (
+            "🎨 <b>每日简报邮件主题风格设置</b>\n\n"
+            "支持一键切换邮件排版视觉风格，即刻生效：\n\n"
+            + "\n\n".join(theme_desc_lines) + "\n\n"
+            "👇 <b>点击下方按钮即可快速切换主题</b>："
+        )
+
+        keyboard.append([
+            {"text": "🔙 返回管理中心", "callback_data": "m_manage"},
+            {"text": "❌ 关闭菜单", "callback_data": "m_close"}
+        ])
         return text, {"inline_keyboard": keyboard}
 
     def _build_vm_menu(self) -> tuple[str, dict]:
@@ -262,16 +332,19 @@ class TelegramBotListener:
         n_cfg = self.config.get("notifiers", {})
         tg_briefing = n_cfg.get("telegram", {}).get("briefing_enabled", True)
         email_enabled = n_cfg.get("email", {}).get("enabled", False)
+        webhook_enabled = n_cfg.get("webhook", {}).get("enabled", False)
         alert_interval = self.config.get("schedule", {}).get("alert_interval_seconds", 120)
 
         tg_str = "🟢 开启" if tg_briefing else "🔴 关闭"
         email_str = "🟢 开启" if email_enabled else "🔴 关闭"
+        webhook_str = "🟢 开启" if webhook_enabled else "🔴 关闭"
         alert_str = f"🟢 运行中 ({alert_interval}s)" if alert_interval > 0 else "🔴 已暂停"
 
         text = (
             f"🔔 <b>通知渠道与轮询控制面板</b>\n\n"
             f"• Telegram 定时简报推送: <b>{tg_str}</b>\n"
-            f"• 邮件 notification 状态: <b>{email_str}</b>\n"
+            f"• 邮件状态通知: <b>{email_str}</b>\n"
+            f"• Webhook 推送通知: <b>{webhook_str}</b>\n"
             f"• 异常预警后台轮询: <b>{alert_str}</b>\n\n"
             f"点击下方按钮进行切换："
         )
@@ -282,7 +355,8 @@ class TelegramBotListener:
                 {"text": f"📧 邮件通知: {email_str}", "callback_data": "n_email"}
             ],
             [
-                {"text": f"⚠️ 后台告警轮询: {alert_str}", "callback_data": "n_alert_engine"}
+                {"text": f"🌐 Webhook: {webhook_str}", "callback_data": "n_webhook"},
+                {"text": f"⚠️ 告警轮询: {alert_str}", "callback_data": "n_alert_engine"}
             ],
             [
                 {"text": "🔙 返回管理中心", "callback_data": "m_manage"},
@@ -327,20 +401,27 @@ class TelegramBotListener:
     def _get_help_text(self) -> str:
         return (
             "🤖 <b>Proxmox VE 监控服务 · Bot 指令指南</b>:\n\n"
-            "🎛️ <b>交互式管理中心</b>:\n"
-            "• <b>/manage</b> - 呼出核心管理控制面板 (推荐使用)\n"
-            "• <b>/start</b> 或 <b>/menu</b> - 进入管理中心\n"
-            "• <b>/key_vms</b> 或 <b>/vms</b> - 直达实例重点监控点选面板\n\n"
-            "🔍 <b>状态与诊断</b>:\n"
+            "🎛️ <b>交互式管理控制面板 (推荐)</b>:\n"
+            "• <b>/manage</b> - 呼出核心交互式管理中心\n"
+            "• <b>/theme</b> - 直达每日简报邮件视觉主题切换面板\n"
+            "• <b>/vms</b> - 直达实例重点监控点选面板\n"
+            "• <b>/notifiers</b> - 直达通知渠道与告警开关面板\n"
+            "• <b>/thresholds</b> - 直达告警预警阈值调节面板\n"
+            "• <b>/traffic</b> - 直达流量统计维度配置面板\n\n"
+            "🔍 <b>状态与快速诊断</b>:\n"
             "• <b>/status</b> - 实时拉取并回复 PVE 状态简报\n"
             "• <b>/temp</b> - 查看 CPU 及 NVMe/硬盘硬件温度快照\n"
+            "• <b>/test_briefing</b> - 立即触发向所有渠道广播测试简报\n"
+            "• <b>/test_alert</b> - 立即触发广播通道连通性测试警报\n"
             "• <b>/cancel</b> - 强行清空积压待处理消息队列\n\n"
             "⚙️ <b>快捷命令行指令</b>:\n"
+            "• /set_theme &lt;newspaper|nordic|apple&gt; - 切换邮件排版主题\n"
             "• /set_cpu &lt;温度&gt; - 修改 CPU 告警温度 (如 /set_cpu 80)\n"
             "• /set_mem &lt;百分比&gt; - 修改内存告警比例 (如 /set_mem 85)\n"
             "• /set_nvme &lt;温度&gt; - 修改 NVMe 告警温度 (如 /set_nvme 65)\n"
             "• /set_key_vms &lt;ID列表&gt; - 批量设置重点监控 (如 /set_key_vms 101,102)\n"
-            "• /add_key_vm &lt;ID&gt; / /del_key_vm &lt;ID&gt; - 手动增删监控实例"
+            "• /add_key_vm &lt;ID&gt; / /del_key_vm &lt;ID&gt; - 手动增删监控实例\n"
+            "• /toggle_webhook - 切换 Webhook 通知开关"
         )
 
     # ==================== Callback Query Handler ====================
@@ -356,6 +437,11 @@ class TelegramBotListener:
         if data in ["m_manage", "menu_main"]:
             self._answer_callback(cb_id)
             text, reply_markup = self._build_manage_menu()
+            self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
+
+        elif data in ["m_themes", "menu_themes"]:
+            self._answer_callback(cb_id)
+            text, reply_markup = self._build_themes_menu()
             self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
 
         elif data in ["m_vms", "menu_vms"]:
@@ -387,6 +473,22 @@ class TelegramBotListener:
         elif data in ["m_close", "menu_close"]:
             self._answer_callback(cb_id, "管理中心已关闭")
             self._edit_message(chat_id, msg_id, "❌ <b>管理中心已关闭</b>")
+
+        # Theme selection callbacks
+        elif data.startswith("theme_"):
+            theme_name = data.replace("theme_", "")
+            email_cfg = self.config.setdefault("notifiers", {}).setdefault("email", {})
+            email_cfg["theme"] = theme_name
+            self._save_config_and_reload(self.config)
+            theme_titles = {
+                "newspaper": "📰 复古报纸 (Newspaper)",
+                "nordic": "🌲 北欧暖纸 (Nordic)",
+                "apple": "🍎 现代灰白 (Apple)"
+            }
+            chosen_title = theme_titles.get(theme_name, theme_name)
+            self._answer_callback(cb_id, f"✅ 已成功切换至：{chosen_title}")
+            text, reply_markup = self._build_themes_menu()
+            self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
 
         # Guest monitoring selection callbacks
         elif data.startswith("toggle_vm_"):
@@ -478,6 +580,17 @@ class TelegramBotListener:
             text, reply_markup = self._build_notifiers_menu()
             self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
 
+        elif data == "n_webhook":
+            wh_cfg = self.config.setdefault("notifiers", {}).setdefault("webhook", {})
+            curr = wh_cfg.get("enabled", False)
+            wh_cfg["enabled"] = not curr
+            self._save_config_and_reload(self.config)
+            self.app.notifier_mgr._init_notifiers()
+            cb_msg = "Webhook 通知已关闭" if curr else "Webhook 通知已开启"
+            self._answer_callback(cb_id, cb_msg)
+            text, reply_markup = self._build_notifiers_menu()
+            self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
+
         elif data == "n_alert_engine":
             alert_interval = self.config.setdefault("schedule", {}).get("alert_interval_seconds", 120)
             if alert_interval > 0:
@@ -509,7 +622,51 @@ class TelegramBotListener:
                 text, reply_markup = self._build_traffic_menu()
                 self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
 
-        # Action execution callbacks
+        # Action execution and test callbacks
+        elif data == "act_refresh":
+            self._answer_callback(cb_id, "🔄 看板已刷新")
+            text, reply_markup = self._build_manage_menu()
+            self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
+
+        elif data == "act_test_briefing":
+            self._answer_callback(cb_id, "📤 正在生成并广播测试简报...")
+            try:
+                if hasattr(self.app, "run_briefing_job"):
+                    self.app.run_briefing_job()
+                    keyboard = [[{"text": "🔙 返回管理中心", "callback_data": "m_manage"}]]
+                    self._send_reply(chat_id, "✅ <b>测试简报已成功广播发送！</b>\n已推送至所有启用的通知渠道（Telegram / Email / Webhook）。", parse_mode="HTML", reply_markup={"inline_keyboard": keyboard})
+                else:
+                    self._send_reply(chat_id, "⚠️ 当前应用实例未就绪。", parse_mode="HTML")
+            except Exception as e:
+                logger.error(f"发送测试简报失败: {e}")
+                self._send_reply(chat_id, f"❌ 测试简报发送失败: {html.escape(str(e))}", parse_mode="HTML")
+
+        elif data == "act_test_alert":
+            self._answer_callback(cb_id, "🚨 正在广播测试告警...")
+            try:
+                test_alert = {
+                    "key": "test_alert_manual",
+                    "title": "【测试】PVE 监控服务通道测试预警",
+                    "content": "此通知为从 Telegram Bot 管理中心手动发起的连通性测试警报，所有配置的通知渠道工作正常。"
+                }
+                node_name = self.config.get("pve", {}).get("node_name", "pve")
+                alert_html = ""
+                if hasattr(self.app, "briefing_gen") and hasattr(self.app.briefing_gen, "generate_alert_html"):
+                    alert_html = self.app.briefing_gen.generate_alert_html(test_alert, node_name=node_name)
+                if hasattr(self.app, "notifier_mgr") and hasattr(self.app.notifier_mgr, "broadcast_alert"):
+                    self.app.notifier_mgr.broadcast_alert(
+                        title=test_alert["title"],
+                        markdown_content=test_alert["content"],
+                        html_content=alert_html
+                    )
+                    keyboard = [[{"text": "🔙 返回管理中心", "callback_data": "m_manage"}]]
+                    self._send_reply(chat_id, "🚨 <b>测试预警通知已成功广播！</b>\n请检查所有启用的通知渠道接收情况。", parse_mode="HTML", reply_markup={"inline_keyboard": keyboard})
+                else:
+                    self._send_reply(chat_id, "⚠️ 通知管理器未就绪。", parse_mode="HTML")
+            except Exception as e:
+                logger.error(f"广播测试预警失败: {e}")
+                self._send_reply(chat_id, f"❌ 测试预警广播失败: {html.escape(str(e))}", parse_mode="HTML")
+
         elif data == "cmd_status":
             self._answer_callback(cb_id, "正在实时拉取简报...")
             try:
@@ -547,6 +704,78 @@ class TelegramBotListener:
         elif cmd in ["/key_vms", "/get_key_vms", "/vms", "/edit_vms"]:
             text, reply_markup = self._build_vm_menu()
             self._send_reply(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
+
+        elif cmd in ["/theme", "/themes"]:
+            text, reply_markup = self._build_themes_menu()
+            self._send_reply(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
+
+        elif cmd in ["/notifiers", "/notifier"]:
+            text, reply_markup = self._build_notifiers_menu()
+            self._send_reply(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
+
+        elif cmd in ["/thresholds", "/threshold"]:
+            text, reply_markup = self._build_thresholds_menu()
+            self._send_reply(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
+
+        elif cmd in ["/traffic"]:
+            text, reply_markup = self._build_traffic_menu()
+            self._send_reply(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
+
+        elif cmd == "/set_theme":
+            if len(cmd_parts) > 1 and cmd_parts[1].lower() in ["newspaper", "nordic", "apple"]:
+                theme_code = cmd_parts[1].lower()
+                self.config.setdefault("notifiers", {}).setdefault("email", {})["theme"] = theme_code
+                self._save_config_and_reload(self.config)
+                theme_names = {"newspaper": "📰 复古报纸", "nordic": "🌲 北欧暖纸", "apple": "🍎 现代灰白"}
+                self._send_reply(chat_id, f"✅ <b>成功设置邮件主题</b>: 已切换为 <b>{theme_names.get(theme_code)} ({theme_code})</b>！", parse_mode="HTML")
+            else:
+                self._send_reply(chat_id, "⚠️ 可选主题: <code>newspaper</code> (复古报纸), <code>nordic</code> (北欧暖纸), <code>apple</code> (现代灰白)\n用法示例: <code>/set_theme nordic</code>", parse_mode="HTML")
+
+        elif cmd in ["/test_briefing", "/test_report"]:
+            self._send_reply(chat_id, "📤 正在生成并广播测试简报，请稍候...", parse_mode="HTML")
+            try:
+                if hasattr(self.app, "run_briefing_job"):
+                    self.app.run_briefing_job()
+                    keyboard = [[{"text": "🔙 返回管理中心", "callback_data": "m_manage"}]]
+                    self._send_reply(chat_id, "✅ <b>测试简报已成功广播发送！</b>\n已推送至所有启用的通知渠道（Telegram / Email / Webhook）。", parse_mode="HTML", reply_markup={"inline_keyboard": keyboard})
+                else:
+                    self._send_reply(chat_id, "⚠️ 当前应用实例未就绪。", parse_mode="HTML")
+            except Exception as e:
+                self._send_reply(chat_id, f"❌ 测试简报发送失败: {html.escape(str(e))}", parse_mode="HTML")
+
+        elif cmd in ["/test_alert"]:
+            self._send_reply(chat_id, "🚨 正在广播测试告警...", parse_mode="HTML")
+            try:
+                test_alert = {
+                    "key": "test_alert_manual",
+                    "title": "【测试】PVE 监控服务通道测试预警",
+                    "content": "此通知为从 Telegram Bot 手动发起的连通性测试警报，所有配置的通知渠道工作正常。"
+                }
+                node_name = self.config.get("pve", {}).get("node_name", "pve")
+                alert_html = ""
+                if hasattr(self.app, "briefing_gen") and hasattr(self.app.briefing_gen, "generate_alert_html"):
+                    alert_html = self.app.briefing_gen.generate_alert_html(test_alert, node_name=node_name)
+                if hasattr(self.app, "notifier_mgr") and hasattr(self.app.notifier_mgr, "broadcast_alert"):
+                    self.app.notifier_mgr.broadcast_alert(
+                        title=test_alert["title"],
+                        markdown_content=test_alert["content"],
+                        html_content=alert_html
+                    )
+                    keyboard = [[{"text": "🔙 返回管理中心", "callback_data": "m_manage"}]]
+                    self._send_reply(chat_id, "🚨 <b>测试预警通知已成功广播！</b>\n请检查所有启用的通知渠道接收情况。", parse_mode="HTML", reply_markup={"inline_keyboard": keyboard})
+                else:
+                    self._send_reply(chat_id, "⚠️ 通知管理器未就绪。", parse_mode="HTML")
+            except Exception as e:
+                self._send_reply(chat_id, f"❌ 测试预警广播失败: {html.escape(str(e))}", parse_mode="HTML")
+
+        elif cmd == "/toggle_webhook":
+            wh_cfg = self.config.setdefault("notifiers", {}).setdefault("webhook", {})
+            curr = wh_cfg.get("enabled", False)
+            wh_cfg["enabled"] = not curr
+            self._save_config_and_reload(self.config)
+            self.app.notifier_mgr._init_notifiers()
+            status_str = "🟢 已开启" if not curr else "🔴 已关闭"
+            self._send_reply(chat_id, f"🔔 <b>通知开关变更</b>: Webhook 通知已切换为 <b>{status_str}</b>！", parse_mode="HTML")
 
         elif cmd in ["/cancel", "/clear", "/stop_queue"]:
             self.last_status_time = 0

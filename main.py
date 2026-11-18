@@ -110,10 +110,11 @@ class PVEMonitorApp:
 
         brief_dict = self.briefing_gen.build_briefing_data(api_data, hw_data, health_data, self.config)
         markdown_content = self.briefing_gen.generate_markdown(brief_dict)
-        html_content = self.briefing_gen.generate_html(brief_dict)
+        theme = self.config.get("notifiers", {}).get("email", {}).get("theme", "newspaper")
+        html_content = self.briefing_gen.generate_html(brief_dict, theme=theme)
         tg_html_content = self.briefing_gen.generate_telegram_html(brief_dict)
 
-        title = f"Proxmox VE 状态每日简报 ({brief_dict['node_name']})"
+        title = f"[{brief_dict['node_name']}] 运行 {brief_dict['running_count']}/{brief_dict['total_guests']} · CPU {brief_dict['cpu_usage']} · 内存 {brief_dict['mem_percent']}"
         return {
             "title": title,
             "brief_dict": brief_dict,
@@ -145,11 +146,14 @@ class PVEMonitorApp:
             health_data = self.health_collector.collect_all()
 
             alerts = self.alert_engine.check_alerts(api_data, hw_data, health_data)
+            node_name = self.config.get("pve", {}).get("node_name", "pve")
             for alert in alerts:
                 logger.warning(f"触发警报通知: {alert['title']}")
+                alert_html = self.briefing_gen.generate_alert_html(alert, node_name=node_name)
                 self.notifier_mgr.broadcast_alert(
                     title=alert["title"],
-                    markdown_content=alert["content"]
+                    markdown_content=alert["content"],
+                    html_content=alert_html
                 )
         except Exception as e:
             logger.error(f"预警检测过程出错: {e}")
@@ -170,9 +174,16 @@ def main():
 
     if args.test_alert:
         logger.info("=== 触发一次测试告警 ===")
+        test_alert_dict = {
+            "key": "test_alert",
+            "title": "PVE 监控服务测试告警",
+            "content": "这是一个测试告警消息，证明您的通知渠道配置正确且能够正常接收预警！"
+        }
+        test_html = app.briefing_gen.generate_alert_html(test_alert_dict, node_name=app.briefing_gen.node_name)
         app.notifier_mgr.broadcast_alert(
-            title="PVE 监控服务测试告警",
-            markdown_content="这是一个测试告警消息，证明您的通知渠道配置正确且能够正常接收预警！"
+            title=test_alert_dict["title"],
+            markdown_content=test_alert_dict["content"],
+            html_content=test_html
         )
         return
 

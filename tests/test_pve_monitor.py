@@ -1,3 +1,4 @@
+import copy
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -604,6 +605,156 @@ class TestPVEMonitor(unittest.TestCase):
         # Second call should not have parse_mode="HTML"
         second_payload = mock_post.call_args_list[1].kwargs["json"]
         self.assertNotIn("parse_mode", second_payload)
+
+    def test_multi_theme_rendering_and_fallback(self):
+        """Verify that newspaper, nordic, and apple themes all render successfully."""
+        data = {
+            "node_name": "alpha_node",
+            "time": "2026-11-18 12:00:00",
+            "uptime": "5天",
+            "cpu_usage": "10.0%", "cpu_usage_num": 10.0,
+            "cpu_temp": "48.0°C", "cpu_temp_val": 48.0,
+            "nvme_temps": {},
+            "mem_used_str": "4.0 GB", "mem_total_str": "16.0 GB",
+            "mem_percent": "25.0%", "mem_percent_num": 25.0,
+            "swap_used_str": "0.0 GB", "swap_total_str": "4.0 GB",
+            "swap_percent": "0.0%", "swap_percent_num": 0.0,
+            "net_in_str": "1.0 MB/s", "net_out_str": "0.5 MB/s",
+            "disk_read_str": "0.1 MB/s", "disk_write_str": "0.2 MB/s",
+            "total_guests": 1, "running_count": 1, "stopped_count": 0,
+            "cpu_stats_24h": {"max": "30%", "peak_time": "10:00", "min": "5%", "avg": "8%"},
+            "mem_stats_24h": {"max": "35%", "peak_time": "11:00", "max_pct": "35%", "min": "20%", "avg": "25%"},
+            "load_stats_24h": {"max": "1.0", "peak_time": "12:00", "min": "0.1", "avg": "0.4"},
+            "net_stats_24h": {"max_rx": "10 MB/s", "rx_peak_time": "09:00", "max_tx": "5 MB/s"},
+            "top_guests": [{"id": 101, "name": "test_vm", "type": "VM", "mem_str": "2.0 GB / 4.0 GB", "mem_pct": 50.0, "cpu_max": "15%", "cpu_time": "10:00", "cpu_avg": "5%", "mem_max": "2.0 GB", "mem_time": "10:00", "mem_min": "1.0 GB"}],
+            "vm_net_stats": [],
+            "storage_info": [{"name": "local", "type": "dir", "used_str": "10 GB", "total_str": "100 GB", "avail_str": "90 GB", "pct": "10%", "pct_num": 10.0, "color": "#10b981"}],
+            "disks_smart": [{"device": "/dev/sda", "model": "KINGSTON", "smart_passed": True, "health": "PASSED", "wearout": 99}],
+            "usb_devices": [],
+            "show_daily": True, "show_weekly": True, "show_monthly": True, "show_total": True
+        }
+
+        # 1. Newspaper Theme (default)
+        html_news = self.briefing_gen.generate_html(data, theme="newspaper")
+        self.assertIn("The Proxmox Dispatch", html_news)
+        self.assertIn("alpha_node", html_news)
+        self.assertIn("KINGSTON", html_news)
+
+        # 2. Nordic Warm Theme
+        html_nord = self.briefing_gen.generate_html(data, theme="nordic")
+        self.assertIn("SYSTEM REPORT · 每日公报", html_nord)
+        self.assertIn("alpha_node", html_nord)
+        self.assertIn("KINGSTON", html_nord)
+
+        # 3. Apple Clean Theme
+        html_apple = self.briefing_gen.generate_html(data, theme="apple")
+        self.assertIn("Proxmox VE 每日简报 · alpha_node", html_apple)
+        self.assertIn("KINGSTON", html_apple)
+
+        # 4. Unknown theme fallback to default newspaper
+        html_fallback = self.briefing_gen.generate_html(data, theme="non_existent")
+        self.assertIn("The Proxmox Dispatch", html_fallback)
+
+    def test_alert_html_generation_and_security_escaping(self):
+        """Verify alert HTML card formatting and malicious payload escaping."""
+        alert_dict = {
+            "key": "cpu_temp_high",
+            "title": "CPU 温度高危警报",
+            "content": "当前核心温度达到 82.5°C，请检查风扇！"
+        }
+        alert_html = self.briefing_gen.generate_alert_html(alert_dict, node_name="pve_host")
+        self.assertIn("CPU 温度高危警报", alert_html)
+        self.assertIn("pve_host", alert_html)
+        self.assertIn("建议排查与恢复指引", alert_html)
+        self.assertIn("CRITICAL 紧急预警", alert_html)
+
+        # Test XSS protection in alert title & content
+        xss_alert = {
+            "key": "vm_stopped_bad",
+            "title": "<script>alert('xss')</script>",
+            "content": "<img src=x onerror=alert(1)>"
+        }
+        xss_html = self.briefing_gen.generate_alert_html(xss_alert, node_name="node<test>")
+        self.assertNotIn("<script>alert('xss')</script>", xss_html)
+        self.assertIn("&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;", xss_html)
+        self.assertNotIn("<img src=x onerror=alert(1)>", xss_html)
+
+    def test_main_alert_job_broadcasts_html(self):
+        """Verify that AlertEngine alerts pass html_content into broadcast_alert."""
+        from main import PVEMonitorApp
+        app = PVEMonitorApp(self.config)
+        app.alert_engine.history_file = None
+        app.alert_engine._alert_history.clear()
+        app.pve_collector.collect_all = MagicMock(return_value={
+            "node_status": {"memory": {"used": 15 * (1024**3), "total": 16 * (1024**3)}, "swap": {"used": 0, "total": 0}},
+            "vms": [], "lxcs": []
+        })
+        app.hw_collector.collect_all = MagicMock(return_value={"temperatures": {"cpu_temp": 85.0}})
+        app.health_collector.collect_all = MagicMock(return_value={"recent_oom_events": []})
+        app.notifier_mgr.broadcast_alert = MagicMock()
+
+        app.run_alert_check_job()
+
+        # Should have broadcasted CPU or Memory alert with html_content
+        self.assertGreater(app.notifier_mgr.broadcast_alert.call_count, 0)
+        call_kwargs = app.notifier_mgr.broadcast_alert.call_args.kwargs
+        self.assertIn("html_content", call_kwargs)
+        self.assertIsNotNone(call_kwargs["html_content"])
+        self.assertIn("预警", call_kwargs["html_content"])
+        self.assertIn("建议排查与恢复指引", call_kwargs["html_content"])
+
+    @patch("engine.telegram_listener.TelegramBotListener._save_config_and_reload")
+    def test_telegram_manage_themes_and_quick_actions(self, mock_save):
+        """Verify theme switching and quick interactive actions in Telegram listener."""
+        app = MagicMock()
+        tg_config = copy.deepcopy(self.config)
+        tg_config["notifiers"]["telegram"] = {"enabled": True, "bot_token": "dummy", "chat_id": "123"}
+        tg_config["notifiers"]["email"] = {"enabled": True, "theme": "newspaper"}
+        tg_config["notifiers"]["webhook"] = {"enabled": False}
+
+        listener = TelegramBotListener(tg_config, app)
+        listener._send_reply = MagicMock()
+        listener._edit_message = MagicMock()
+        listener._answer_callback = MagicMock()
+
+        # 1. Test navigating to theme menu via callback
+        listener._handle_callback_query("cb_theme_nav", "123", 99, "m_themes")
+        self.assertIn("每日简报邮件主题风格设置", listener._edit_message.call_args.args[2])
+        self.assertIn("✅ 📰 复古报纸", str(listener._edit_message.call_args.kwargs["reply_markup"]))
+
+        # 2. Test switching to nordic theme via callback
+        listener._handle_callback_query("cb_nordic", "123", 99, "theme_nordic")
+        self.assertEqual(tg_config["notifiers"]["email"]["theme"], "nordic")
+        self.assertIn("北欧暖纸", listener._answer_callback.call_args.args[1])
+
+        # 3. Test switching to apple theme via command
+        listener._handle_command("123", "/set_theme apple")
+        self.assertEqual(tg_config["notifiers"]["email"]["theme"], "apple")
+        self.assertIn("现代灰白", listener._send_reply.call_args.args[1])
+
+        # 4. Test Webhook toggle callback & command
+        listener._handle_callback_query("cb_wh", "123", 99, "n_webhook")
+        self.assertTrue(tg_config["notifiers"]["webhook"]["enabled"])
+        listener._handle_command("123", "/toggle_webhook")
+        self.assertFalse(tg_config["notifiers"]["webhook"]["enabled"])
+
+        # 5. Test quick action: refresh manage board
+        listener._handle_callback_query("cb_refresh", "123", 99, "act_refresh")
+        self.assertIn("交互式管理中心", listener._edit_message.call_args.args[2])
+        self.assertIn("刷新", listener._answer_callback.call_args.args[1])
+
+        # 6. Test quick action: test briefing trigger
+        app.run_briefing_job = MagicMock()
+        listener._handle_callback_query("cb_tb", "123", 99, "act_test_briefing")
+        app.run_briefing_job.assert_called_once()
+        self.assertIn("测试简报已成功广播发送", listener._send_reply.call_args.args[1])
+
+        # 7. Test quick action: test alert trigger
+        app.briefing_gen = self.briefing_gen
+        app.notifier_mgr = MagicMock()
+        listener._handle_callback_query("cb_ta", "123", 99, "act_test_alert")
+        app.notifier_mgr.broadcast_alert.assert_called_once()
+        self.assertIn("测试预警通知已成功广播", listener._send_reply.call_args.args[1])
 
 if __name__ == "__main__":
     unittest.main()

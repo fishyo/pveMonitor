@@ -54,6 +54,7 @@ notifiers:
   email:
     enabled: false             # 配置完成后修改为 true
     briefing_enabled: true     # 是否开启邮件定时简报推送
+    theme: "newspaper"         # 简报邮件主题风格，可选: newspaper (复古报纸, 默认), nordic (北欧暖纸), apple (现代灰白)
     smtp_host: "smtp.qq.com"   # 如: smtp.qq.com / smtp.163.com
     smtp_port: 465
     use_ssl: true
