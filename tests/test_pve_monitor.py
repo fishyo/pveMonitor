@@ -236,7 +236,9 @@ class TestPVEMonitor(unittest.TestCase):
             "nvme_temps": {"nvme0": 42.0},
             "hdd_temps": {},
         }
-        listener = TelegramBotListener(self.config, app)
+        tg_config = dict(self.config)
+        tg_config["notifiers"]["telegram"] = {"enabled": True, "bot_token": "dummy", "chat_id": "123"}
+        listener = TelegramBotListener(tg_config, app)
         listener._send_reply = MagicMock()
 
         listener._handle_command("123", "/temp")
@@ -342,7 +344,9 @@ class TestPVEMonitor(unittest.TestCase):
             "nvme_temps": {"nvme0": 42.0},
             "hdd_temps": {},
         }
-        listener = TelegramBotListener(self.config, app)
+        tg_config = dict(self.config)
+        tg_config["notifiers"]["telegram"] = {"enabled": True, "bot_token": "dummy", "chat_id": "123"}
+        listener = TelegramBotListener(tg_config, app)
         listener._send_reply = MagicMock()
 
         listener._handle_command("123", "/temp")
@@ -509,6 +513,97 @@ class TestPVEMonitor(unittest.TestCase):
 
         listener._handle_callback_query("cb_nav3", "123", 99, "m_traffic")
         self.assertIn("简报流量统计维度配置面板", listener._edit_message.call_args.args[2])
+
+    def test_security_telegram_authorization_enforced(self):
+        """Verify strict authorization check when chat_id is missing or invalid."""
+        app = MagicMock()
+        # Case 1: chat_id not configured (empty string)
+        tg_config = dict(self.config)
+        tg_config["notifiers"]["telegram"] = {"enabled": True, "bot_token": "dummy", "chat_id": ""}
+        listener = TelegramBotListener(tg_config, app)
+        listener._send_reply = MagicMock()
+        listener._answer_callback = MagicMock()
+
+        listener._handle_command("123", "/manage")
+        self.assertIn("未授权", listener._send_reply.call_args.args[1])
+
+        listener._handle_callback_query("cb_1", "123", 99, "menu_main")
+        self.assertIn("未授权", listener._answer_callback.call_args.args[1])
+
+    def test_security_html_escaping_in_briefing(self):
+        """Verify that XSS payloads in guest names are properly escaped in HTML briefing."""
+        malicious_data = {
+            "node_name": "test<script>alert(1)</script>",
+            "time": "2026-07-24 20:00:00",
+            "uptime": "100天",
+            "cpu_usage": "15.0%",
+            "cpu_temp": "45.0°C",
+            "nvme_temps": {},
+            "mem_used_str": "8.0 GB",
+            "mem_total_str": "16.0 GB",
+            "mem_percent": "50.0%",
+            "swap_used_str": "0.0 GB",
+            "swap_total_str": "4.0 GB",
+            "swap_percent": "0.0%",
+            "net_in_str": "10 MB/s",
+            "net_out_str": "5 MB/s",
+            "disk_read_str": "1 MB/s",
+            "disk_write_str": "2 MB/s",
+            "total_guests": 1,
+            "running_count": 1,
+            "stopped_count": 0,
+            "cpu_stats_24h": {"max": "35%", "peak_time": "12:00", "min": "5%", "avg": "10%"},
+            "mem_stats_24h": {"max": "60%", "peak_time": "14:00", "max_pct": "60%", "min": "40%", "avg": "50%"},
+            "load_stats_24h": {"max": "2.5", "peak_time": "15:00", "min": "0.2", "avg": "0.8"},
+            "net_stats_24h": {"max_rx": "50 MB/s", "rx_peak_time": "18:00", "max_tx": "30 MB/s"},
+            "top_guests": [
+                {"id": 101, "name": "bad<img src=x onerror=alert(1)>", "mem_str": "6.0 GB", "cpu_max": "20%", "cpu_time": "10:00", "cpu_avg": "5%", "mem_max": "6.0 GB", "mem_time": "10:00", "mem_min": "4.0 GB"}
+            ],
+            "vm_net_stats": [],
+            "storage_info": [],
+            "disks_smart": [],
+            "usb_devices": [],
+            "show_daily": True, "show_weekly": True, "show_monthly": True, "show_total": True
+        }
+        html = self.briefing_gen.generate_html(malicious_data)
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
+        self.assertNotIn("<img src=x onerror=alert(1)>", html)
+
+    def test_alerter_ignores_templates(self):
+        """Verify that stopped templates do not trigger VM offline alerts."""
+        alerter = AlertEngine(self.config, history_file=None)
+        api_data = {
+            "node_status": {},
+            "vms": [
+                {"vmid": 101, "name": "base-template", "status": "stopped", "template": 1}
+            ],
+            "lxcs": []
+        }
+        alerts = alerter.check_alerts(api_data, {}, {})
+        # Should not alert on template VM
+        self.assertEqual(len(alerts), 0)
+
+    @patch("notifiers.telegram_notifier.requests.post")
+    def test_telegram_notifier_fallback_on_parse_error(self, mock_post):
+        """Verify fallback to plain text if HTML sending fails."""
+        from notifiers.telegram_notifier import TelegramNotifier
+        cfg = {"notifiers": {"telegram": {"enabled": True, "bot_token": "token", "chat_id": "123"}}}
+        notifier = TelegramNotifier(cfg)
+
+        resp_fail = MagicMock()
+        resp_fail.raise_for_status.side_effect = requests.exceptions.HTTPError("400 Bad Request")
+        resp_ok = MagicMock()
+        resp_ok.raise_for_status.return_value = None
+
+        mock_post.side_effect = [resp_fail, resp_ok]
+
+        result = notifier.send_alert("Test Alert", "Content with unescaped <b>tag</b> or <<raw>>")
+        self.assertTrue(result)
+        self.assertEqual(mock_post.call_count, 2)
+        # Second call should not have parse_mode="HTML"
+        second_payload = mock_post.call_args_list[1].kwargs["json"]
+        self.assertNotIn("parse_mode", second_payload)
 
 if __name__ == "__main__":
     unittest.main()

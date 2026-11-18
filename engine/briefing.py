@@ -2,14 +2,14 @@ import datetime
 import jinja2
 
 class BriefingGenerator:
-    """状态简报渲染引擎 (支持 Markdown 与 极简苹果风 100% 手机响应式 HTML 邮件)"""
+    """Briefing report renderer supporting Markdown and responsive HTML emails."""
 
     def __init__(self, node_name: str = "PVE"):
         self.node_name = node_name
 
     @staticmethod
     def _format_bytes(bytes_val: float) -> str:
-        """根据数值自动格式化为 B, KB, MB, GB, TB"""
+        """Format raw byte counts into human-readable binary units (B to PB)."""
         if not bytes_val or bytes_val <= 0:
             return "0 B"
         units = ["B", "KB", "MB", "GB", "TB", "PB"]
@@ -22,18 +22,21 @@ class BriefingGenerator:
 
     @staticmethod
     def _bytes_to_gb(bytes_val: float) -> str:
+        """Convert bytes to gigabytes string."""
         if not bytes_val:
             return "0.00 GB"
         return f"{bytes_val / (1024 ** 3):.2f} GB"
 
     @staticmethod
     def _bytes_to_mb_s(bytes_val: float) -> str:
+        """Convert bytes per second rate to MB/s string."""
         if not bytes_val:
             return "0.00 MB/s"
         return f"{bytes_val / (1024 ** 2):.2f} MB/s"
 
     @staticmethod
     def _seconds_to_dhms(seconds: int) -> str:
+        """Convert seconds into day, hour, and minute uptime representation."""
         if not seconds:
             return "未知"
         days = seconds // 86400
@@ -42,7 +45,7 @@ class BriefingGenerator:
         return f"{days}天 {hours}小时 {mins}分"
 
     def build_briefing_data(self, api_data: dict, hw_data: dict, health_data: dict, config: dict = None) -> dict:
-        """组装结构化简报数据"""
+        """Compile raw metrics into a structured data dictionary for rendering."""
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         config = config or {}
         tr_cfg = config.get("traffic", {})
@@ -57,7 +60,7 @@ class BriefingGenerator:
         lxcs = api_data.get("lxcs", [])
         raw_storages = api_data.get("storages", [])
 
-        # 整理存储池空间
+        # Storage pool capacities and usage breakdown
         storage_info = []
         for s in raw_storages:
             if isinstance(s, dict) and s.get("active"):
@@ -76,27 +79,27 @@ class BriefingGenerator:
                     "pct": s_pct
                 })
 
-        # 硬件温度
+        # Hardware temperatures and disk health
         temps = hw_data.get("temperatures", {})
         cpu_temp = temps.get("cpu_temp", "N/A")
         nvme_temps = temps.get("nvme_temps", {})
         disks_smart = hw_data.get("disks_smart", [])
 
-        # 内存
+        # Host RAM usage
         mem_total = node_stat.get("memory", {}).get("total", 0)
         mem_used = node_stat.get("memory", {}).get("used", 0)
         mem_percent = (mem_used / mem_total * 100) if mem_total else 0.0
         
-        # Swap
+        # Host swap usage
         swap_total = node_stat.get("swap", {}).get("total", 0)
         swap_used = node_stat.get("swap", {}).get("used", 0)
         swap_percent = (swap_used / swap_total * 100) if swap_total else 0.0
 
-        # CPU & Uptime
+        # CPU usage and system uptime
         cpu_usage = node_stat.get("cpu", 0) * 100
         uptime = self._seconds_to_dhms(node_stat.get("uptime", 0))
 
-        # 24h RRD 历史极值与时间戳提取
+        # 24-hour RRD historical peak and average analysis
         rrd_history = api_data.get("rrd_history", [])
         
         def _get_peak_info(
@@ -158,7 +161,7 @@ class BriefingGenerator:
         disk_read = latest_rrd.get("diskread", 0)
         disk_write = latest_rrd.get("diskwrite", 0)
 
-        # VM / LXC 概览与多维度流量极值
+        # Aggregate guest overview and traffic statistics
         all_guests = vms + lxcs
         total_guests = len(all_guests)
         running_guests = [g for g in all_guests if g.get("status") == "running"]
@@ -247,7 +250,7 @@ class BriefingGenerator:
         }
 
     def generate_telegram_html(self, data: dict) -> str:
-        """生成适合 Telegram 手机聊天框阅读的紧凑 HTML 简报。"""
+        """Render a compact HTML briefing optimized for mobile Telegram chat windows."""
         show_d = data.get("show_daily", True)
         show_w = data.get("show_weekly", True)
         show_m = data.get("show_monthly", True)
@@ -330,7 +333,7 @@ class BriefingGenerator:
         return "\n".join(lines)
 
     def generate_markdown(self, data: dict) -> str:
-        """生成 Markdown 格式简报"""
+        """Render markdown-formatted briefing report."""
         top_guests_md = ""
         for idx, g in enumerate(data["top_guests"], 1):
             top_guests_md += f"  {idx}. [{g['id']}] {g['name']}\n     • 当前内存: {g['mem_str']}\n     • 24h CPU: 🔺 峰值 {g['cpu_max']} (@{g['cpu_time']}) | ➖ 均值 {g['cpu_avg']}\n     • 24h 内存: 🔺 峰值 {g['mem_max']} (@{g['mem_time']}) | 🔻 低值 {g['mem_min']}\n"
@@ -469,7 +472,7 @@ class BriefingGenerator:
         return md
 
     def generate_html(self, data: dict) -> str:
-        """生成【 Style 2 极简苹果风】100% 完美支持 iOS/Android 深色模式与手机大字稀疏排版的 HTML 邮件模版"""
+        """Render responsive Apple-style HTML email supporting dark/light mode."""
         html_template = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -798,5 +801,6 @@ class BriefingGenerator:
   </div>
 </body>
 </html>"""
-        template = jinja2.Template(html_template)
+        # Enforce HTML auto-escaping to mitigate XSS in email clients
+        template = jinja2.Template(html_template, autoescape=True)
         return template.render(data=data)

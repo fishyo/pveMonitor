@@ -5,7 +5,7 @@ from .base import BaseNotifier
 logger = logging.getLogger("pveMonitor.notifiers.webhook")
 
 class WebhookNotifier(BaseNotifier):
-    """Webhook 多渠道通知发送器 (支持 飞书 / 钉钉 / 企业微信 / Server酱 / Bark / PushDeer)"""
+    """Multi-channel webhook dispatcher (Feishu, DingTalk, WeCom, ServerChan, Bark, PushDeer)."""
 
     def __init__(self, config: dict):
         self.config = config.get("notifiers", {}).get("webhook", {})

@@ -8,7 +8,7 @@ from .webhook_notifier import WebhookNotifier
 logger = logging.getLogger("pveMonitor.notifiers.manager")
 
 class NotificationManager:
-    """通知管理分发器"""
+    """Notification orchestrator and dispatcher across configured channels."""
 
     def __init__(self, config: dict):
         self.config = config
@@ -17,19 +17,19 @@ class NotificationManager:
 
     def _init_notifiers(self):
         self.notifiers.clear()
-        # 1. Email 邮件
+        # 1. SMTP Email channel
         email_n = EmailNotifier(self.config)
         if email_n.enabled:
             self.notifiers.append(email_n)
             logger.info("初始化 Notification: Email 已激活")
 
-        # 2. Telegram
+        # 2. Telegram Bot channel
         tg_n = TelegramNotifier(self.config)
         if tg_n.enabled:
             self.notifiers.append(tg_n)
             logger.info("初始化 Notification: Telegram 已激活")
 
-        # 3. Webhook
+        # 3. Webhook channel
         wh_n = WebhookNotifier(self.config)
         if wh_n.enabled:
             self.notifiers.append(wh_n)
@@ -39,7 +39,7 @@ class NotificationManager:
             logger.warning("未开启任何通知渠道，所有简报和告警将仅输出到控制台日志！")
 
     def broadcast_briefing(self, title: str, markdown_content: str, html_content: str = None, tg_html: str = None):
-        """向所有已启用的渠道发送简报"""
+        """Broadcast briefing report across all active notification channels."""
         logger.info(f"广播发送简报: {title}")
         for n in self.notifiers:
             if isinstance(n, TelegramNotifier):
@@ -48,7 +48,7 @@ class NotificationManager:
                 n.send_briefing(title, markdown_content, html_content)
 
     def broadcast_alert(self, title: str, markdown_content: str, html_content: str = None, tg_html: str = None):
-        """向所有已启用的渠道发送告警"""
+        """Broadcast alert notification across all active notification channels."""
         logger.info(f"广播发送告警: {title}")
         for n in self.notifiers:
             if isinstance(n, TelegramNotifier):

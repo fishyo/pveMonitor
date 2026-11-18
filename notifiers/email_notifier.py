@@ -9,7 +9,7 @@ from .base import BaseNotifier
 logger = logging.getLogger("pveMonitor.notifiers.email")
 
 class EmailNotifier(BaseNotifier):
-    """邮件 SMTP 通知发送器 (包含响应式 HTML 简报)"""
+    """SMTP email notification dispatcher supporting responsive HTML briefings."""
 
     def __init__(self, config: dict):
         self.config = config.get("notifiers", {}).get("email", {})
@@ -37,32 +37,44 @@ class EmailNotifier(BaseNotifier):
         msg["From"] = self.sender
         msg["To"] = ", ".join(self.receivers)
 
-        # 纯文本备用部分
+        # Plaintext fallback payload
         part_text = MIMEText(markdown_content, "plain", "utf-8")
         msg.attach(part_text)
 
-        # HTML 内容部分
+        # Responsive HTML payload
         if html_content:
             part_html = MIMEText(html_content, "html", "utf-8")
             msg.attach(part_html)
 
+        server = None
         try:
             if self.use_ssl:
                 server = smtplib.SMTP_SSL(self.smtp_host, self.smtp_port, timeout=15)
             else:
                 server = smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=15)
-                server.starttls()
+                try:
+                    server.starttls()
+                except smtplib.SMTPNotSupportedError:
+                    pass
 
             if self.username and self.password:
                 server.login(self.username, self.password)
 
             server.sendmail(self.sender, self.receivers, msg.as_string())
-            server.quit()
             logger.info(f"邮件已成功发送至 {self.receivers}")
             return True
         except Exception as e:
             logger.error(f"发送邮件失败: {e}")
             return False
+        finally:
+            if server:
+                try:
+                    server.quit()
+                except Exception:
+                    try:
+                        server.close()
+                    except Exception:
+                        pass
 
     def send_briefing(self, title: str, markdown_content: str, html_content: str = None) -> bool:
         if not self.briefing_enabled:

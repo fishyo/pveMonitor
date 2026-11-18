@@ -26,7 +26,7 @@ CONFIG_FILE = "config.yaml"
 EXAMPLE_CONFIG_FILE = "config.example.yaml"
 
 def load_config() -> dict:
-    """加载 YAML 配置文件，自动支持环境变量覆盖 (Environment Variables Overlay)"""
+    """Load configuration YAML with optional environment variable overrides."""
     if not os.path.exists(CONFIG_FILE):
         if os.path.exists(EXAMPLE_CONFIG_FILE):
             logger.info(f"未找到 {CONFIG_FILE}，自动从模板创建配置文件...")
@@ -41,7 +41,7 @@ def load_config() -> dict:
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
 
-    # 支持环境变量动态覆盖敏感凭据
+    # Support runtime environment variable overrides for sensitive credentials
     if os.getenv("PVE_HOST"):
         cfg.setdefault("pve", {})["host"] = os.getenv("PVE_HOST")
     if os.getenv("PVE_PASSWORD"):
@@ -56,7 +56,7 @@ def load_config() -> dict:
     return cfg
 
 class PVEMonitorApp:
-    """PVE 监控服务主应用程序"""
+    """Main application orchestrator for PVE monitoring service."""
 
     def __init__(self, config: dict):
         self.config = config
@@ -70,12 +70,12 @@ class PVEMonitorApp:
         self.notifier_mgr = NotificationManager(config)
         self.scheduler = None
         
-        # 启动 Telegram Bot 交互指令监听器
+        # Start background Telegram bot interactive listener
         self.tg_listener = TelegramBotListener(config, self)
         self.tg_listener.start()
 
     def update_alert_job_interval(self, seconds: int):
-        """动态更新或暂停/恢复 APScheduler 告警轮询任务 (安全防止 0 秒过度轮询)"""
+        """Dynamically reschedule or pause the alert polling job."""
         if not self.scheduler:
             return
         job = self.scheduler.get_job("alert_check")
@@ -103,7 +103,7 @@ class PVEMonitorApp:
             logger.info("告警轮询任务已成功暂停并移除调度队列")
 
     def generate_briefing(self) -> dict:
-        """采集 PVE 数据并生成各渠道格式的简报内容"""
+        """Collect cluster metrics and compile multi-channel formatted briefings."""
         api_data = self.pve_collector.collect_all()
         hw_data = self.hw_collector.collect_all(pve_collector=self.pve_collector)
         health_data = self.health_collector.collect_all()
@@ -123,7 +123,7 @@ class PVEMonitorApp:
         }
 
     def run_briefing_job(self):
-        """执行状态简报采集与全渠道广播任务 (适用于 Cron 定时器)"""
+        """Execute scheduled briefing generation and multi-channel broadcast."""
         logger.info("正在采集 PVE 数据并广播发送状态简报...")
         try:
             brief_data = self.generate_briefing()
@@ -137,10 +137,11 @@ class PVEMonitorApp:
             logger.error(f"生成状态简报过程出错: {e}", exc_info=True)
 
     def run_alert_check_job(self):
-        """执行即时异常预警检测任务"""
+        """Execute threshold inspection and broadcast active alerts."""
         try:
             api_data = self.pve_collector.collect_all()
-            hw_data = self.hw_collector.collect_all()
+            # Pass pve_collector to support pure API mode for disk smart data collection
+            hw_data = self.hw_collector.collect_all(pve_collector=self.pve_collector)
             health_data = self.health_collector.collect_all()
 
             alerts = self.alert_engine.check_alerts(api_data, hw_data, health_data)
@@ -175,11 +176,11 @@ def main():
         )
         return
 
-    # 启动定时调度器
+    # Initialize scheduler
     scheduler = BackgroundScheduler()
     app.scheduler = scheduler
 
-    # 1. 注册每日简报 Cron 任务
+    # 1. Register daily briefing cron job
     briefing_cron = config.get("schedule", {}).get("briefing_cron", "0 8 * * *")
     try:
         scheduler.add_job(
@@ -191,7 +192,7 @@ def main():
     except Exception as e:
         logger.error(f"解析 briefing_cron [{briefing_cron}] 失败: {e}")
 
-    # 2. 注册预警检测 Interval 任务 (安全的 > 0 判定，防止重启后每 1 秒高频刷屏)
+    # 2. Register alert checking interval job (interval > 0 guard)
     alert_interval = config.get("schedule", {}).get("alert_interval_seconds", 120)
     if alert_interval > 0:
         scheduler.add_job(
@@ -204,10 +205,10 @@ def main():
     else:
         logger.info("异常预警轮询处于暂停状态 (alert_interval_seconds <= 0)")
 
-    # 确保 logs 目录存在
+    # Ensure runtime logs directory exists
     os.makedirs("logs", exist_ok=True)
 
-    # 启动时是否先跑一次简报
+    # Initial briefing dispatch check
     if config.get("schedule", {}).get("briefing_on_start", True):
         logger.info("服务启动，立即发送首条测试简报...")
         app.run_briefing_job()
@@ -219,7 +220,7 @@ def main():
     
     try:
         while True:
-            # 刷新探针心跳文件
+            # Refresh heartbeat file for container healthcheck probe
             with open("logs/heartbeat", "w", encoding="utf-8") as f:
                 f.write(str(time.time()))
             time.sleep(5)

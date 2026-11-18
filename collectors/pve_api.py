@@ -3,13 +3,13 @@ import threading
 import urllib3
 import requests
 
-# 禁用未验证 HTTPS 请求的警告
+# Suppress insecure HTTPS connection warnings for self-signed certificates
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger("pveMonitor.collectors.pve_api")
 
 class PVECollector:
-    """Proxmox VE REST API 数据采集器"""
+    """Proxmox VE REST API metrics collector."""
     
     def __init__(self, config: dict):
         self.config = config.get("pve", {})
@@ -27,7 +27,7 @@ class PVECollector:
         self._setup_auth()
 
     def _setup_auth(self):
-        """配置认证 Token 或登录凭证"""
+        """Configure API token or session ticket credentials."""
         if self.auth_type == "token":
             user = self.config.get("user", "")
             token_id = self.config.get("token_id", "")
@@ -36,11 +36,11 @@ class PVECollector:
             self.headers["Authorization"] = auth_header
             logger.info("已配置 PVE API Token 认证")
         else:
-            # 密码认证模式
+            # Password ticket authentication mode
             self._login_with_password()
 
     def _login_with_password(self):
-        """使用用户名和密码获取 CSRFPreventionToken 和 PVEAuthCookie"""
+        """Authenticate with username and password to retrieve ticket and CSRF token."""
         user = self.config.get("user", "root@pam")
         password = self.config.get("password", "")
         login_url = f"{self.base_url}/access/ticket"
@@ -62,7 +62,7 @@ class PVECollector:
             logger.error(f"PVE 密码登录认证失败: {e}")
 
     def _get(self, endpoint: str, params: dict = None) -> dict:
-        """通用 GET API 请求包装；密码票据过期时自动重新认证并重试一次。"""
+        """Execute a GET request with automatic token re-authentication on 401."""
         url = f"{self.base_url}{endpoint}"
         try:
             resp = requests.get(
@@ -92,56 +92,60 @@ class PVECollector:
             return {}
 
     def get_node_status(self) -> dict:
-        """获取节点综合状态 (内存, CPU, Swap, Uptime, KSM)"""
+        """Fetch node aggregate status (CPU, memory, swap, uptime, KSM)."""
         return self._get(f"/nodes/{self.node_name}/status")
 
     def get_node_rrddata(self, timeframe: str = "day") -> list:
-        """获取节点历史 RRD 数据 (网络流量 netin/netout, 磁盘读写 diskread/diskwrite)"""
+        """Fetch node historical RRD data (network IO, disk IO, CPU, load)."""
         return self._get(f"/nodes/{self.node_name}/rrddata", params={"timeframe": timeframe})
 
     def get_vms_status(self) -> list:
-        """获取 QEMU 虚拟机列表及状态"""
+        """Fetch QEMU VM instances and status list."""
         return self._get(f"/nodes/{self.node_name}/qemu")
 
     def get_lxcs_status(self) -> list:
-        """获取 LXC 容器列表及状态"""
+        """Fetch LXC container instances and status list."""
         return self._get(f"/nodes/{self.node_name}/lxc")
 
     def get_storage_status(self) -> list:
-        """获取存储池状态与容量"""
+        """Fetch storage pools status and capacity metrics."""
         return self._get(f"/nodes/{self.node_name}/storage")
 
     def get_recent_tasks(self, limit: int = 20) -> list:
-        """获取近期节点任务列表 (用于检测备份 VZDump 执行结果)"""
+        """Fetch recent node tasks (e.g. backup vzdump results)."""
         return self._get(f"/nodes/{self.node_name}/tasks", params={"limit": limit})
 
     def get_disks_list(self) -> list:
-        """获取物理磁盘与 S.M.A.R.T 健康列表 (免 SSH)"""
+        """Fetch physical disk devices and SMART health status via API."""
         return self._get(f"/nodes/{self.node_name}/disks/list")
 
     def get_vm_rrddata(self, vmid: int, timeframe: str = "day") -> list:
-        """获取指定虚拟机的历史 RRD 数据 (用于计算 24h 日流量)"""
+        """Fetch historical RRD metrics for a specific VM."""
         return self._get(f"/nodes/{self.node_name}/qemu/{vmid}/rrddata", params={"timeframe": timeframe})
 
     def get_usb_devices(self) -> list:
-        """获取节点 USB 硬件设备列表"""
+        """Fetch host USB hardware devices list."""
         return self._get(f"/nodes/{self.node_name}/hardware/usb")
 
     def get_vm_config(self, vmid: int) -> dict:
-        """获取指定虚拟机的详细硬件配置 (用于匹配 USB 直通)"""
+        """Fetch hardware configuration of a VM to map USB passthrough devices."""
         return self._get(f"/nodes/{self.node_name}/qemu/{vmid}/config")
 
     def collect_all(self) -> dict:
-        """收集所有 PVE API 相关数据"""
+        """Collect and aggregate all PVE API metrics."""
         node_status = self.get_node_status()
         rrd_data = self.get_node_rrddata(timeframe="day")
-        vms = self.get_vms_status() if isinstance(self.get_vms_status(), list) else []
-        lxcs = self.get_lxcs_status() if isinstance(self.get_lxcs_status(), list) else []
-        storages = self.get_storage_status() if isinstance(self.get_storage_status(), list) else []
+        # Collect cluster resources
+        raw_vms = self.get_vms_status()
+        vms = raw_vms if isinstance(raw_vms, list) else []
+        raw_lxcs = self.get_lxcs_status()
+        lxcs = raw_lxcs if isinstance(raw_lxcs, list) else []
+        raw_storages = self.get_storage_status()
+        storages = raw_storages if isinstance(raw_storages, list) else []
         tasks = self.get_recent_tasks(limit=15)
         raw_usb = self.get_usb_devices()
         
-        # 收集每个在线 VM 的 24h/7d/30d RRD 数据及 USB 直通配置
+        # Collect per-VM RRD traffic metrics and USB passthrough mappings
         tr_cfg = self.config.get("traffic", {})
         vm_rrds = {}
         usb_map = {}
@@ -157,7 +161,7 @@ class PVECollector:
                     if tr_cfg.get("show_monthly", True):
                         vm_rrds[vmid]["month"] = self.get_vm_rrddata(vmid, timeframe="month")
                 
-                # 检查虚拟机 USB 直通映射
+                # Check USB passthrough mapping in VM configuration
                 cfg = self.get_vm_config(vmid)
                 if isinstance(cfg, dict):
                     for k, val in cfg.items():
@@ -165,7 +169,7 @@ class PVECollector:
                             host_id = val.split("host=", 1)[1].split(",", 1)[0].strip().lower()
                             usb_map[host_id] = f"[{vmid}] {v.get('name', '')}"
 
-        # 筛选非 Root Hub 的外接 USB 硬件 (如 WD 外接移动硬盘)
+        # Filter external USB hardware devices (excluding virtual root hubs)
         usb_devices = []
         if isinstance(raw_usb, list):
             for dev in raw_usb:

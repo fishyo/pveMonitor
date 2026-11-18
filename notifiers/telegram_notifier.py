@@ -5,7 +5,7 @@ from .base import BaseNotifier
 logger = logging.getLogger("pveMonitor.notifiers.telegram")
 
 class TelegramNotifier(BaseNotifier):
-    """Telegram Bot 通知发送器"""
+    """Telegram Bot notification dispatcher."""
 
     def __init__(self, config: dict):
         self.config = config.get("notifiers", {}).get("telegram", {})
@@ -32,8 +32,21 @@ class TelegramNotifier(BaseNotifier):
             logger.info("Telegram 消息已成功发送")
             return True
         except Exception as e:
-            logger.error(f"Telegram 发送失败: {e}")
-            return False
+            logger.warning(f"Telegram 发送 HTML 消息失败 ({e})，尝试回退为纯文本重新发送...")
+            # Fallback to plain text in case of unescaped HTML entities
+            plain_text = f"[{title}]\n\n{content}"
+            try:
+                fallback_payload = {
+                    "chat_id": self.chat_id,
+                    "text": plain_text
+                }
+                fallback_resp = requests.post(url, json=fallback_payload, timeout=10)
+                fallback_resp.raise_for_status()
+                logger.info("Telegram 纯文本回退消息已成功发送")
+                return True
+            except Exception as fe:
+                logger.error(f"Telegram 纯文本回退发送亦失败: {fe}")
+                return False
 
     def send_briefing(self, title: str, markdown_content: str, html_content: str = None, tg_html: str = None) -> bool:
         if not self.briefing_enabled:

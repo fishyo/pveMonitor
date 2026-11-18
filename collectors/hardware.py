@@ -7,13 +7,13 @@ import subprocess
 logger = logging.getLogger("pveMonitor.collectors.hardware")
 
 class HardwareCollector:
-    """硬件温度、S.M.A.R.T 磁盘寿命与 UPS 状态采集器"""
+    """Hardware sensors, disk SMART health, and UPS metrics collector."""
 
     def __init__(self, config: dict):
         self.config = config
 
     def get_temperatures(self) -> dict:
-        """获取 CPU、NVMe 和 硬盘温度 (以摄氏度 °C 为单位)"""
+        """Fetch CPU, NVMe, and HDD temperatures in Celsius."""
         temps = {
             "cpu_temp": None,
             "cpu_cores": [],
@@ -21,14 +21,14 @@ class HardwareCollector:
             "hdd_temps": {}
         }
         
-        # 1. 尝试使用 sensors -j 命令 (如果系统中安装了 lm-sensors)
+        # 1. Try lm-sensors json output if available
         try:
             res = subprocess.run(["sensors", "-j"], capture_output=True, text=True, timeout=3)
             if res.returncode == 0 and res.stdout:
                 sensor_data = json.loads(res.stdout)
                 core_temps = []
                 for chip_name, chip_val in sensor_data.items():
-                    # CPU Core/Package 温度
+                    # CPU core/package temperature reading
                     if "coretemp" in chip_name or "k10temp" in chip_name or "zenpower" in chip_name:
                         for k, v in chip_val.items():
                             if isinstance(v, dict):
@@ -38,7 +38,7 @@ class HardwareCollector:
                                             temps["cpu_temp"] = round(float(prop_v), 1)
                                         elif "Core" in k:
                                             core_temps.append(round(float(prop_v), 1))
-                    # NVMe 温度
+                    # NVMe drive temperature reading
                     elif "nvme" in chip_name:
                         for k, v in chip_val.items():
                             if isinstance(v, dict):
@@ -51,9 +51,9 @@ class HardwareCollector:
                 temps["cpu_cores"] = core_temps
                 return temps
         except Exception:
-            pass # 无法运行 sensors，退化到读取 sysfs
+            pass  # Fall back to Linux sysfs thermal zones
 
-        # 2. 从 Linux sysfs 读取 (/sys/class/thermal/ 及 /sys/class/hwmon/)
+        # 2. Read from Linux sysfs (/sys/class/thermal/ and /sys/class/hwmon/)
         try:
             thermal_zones = glob.glob("/sys/class/thermal/thermal_zone*")
             for zone in thermal_zones:
@@ -69,7 +69,7 @@ class HardwareCollector:
         except Exception as e:
             logger.warning(f"从 sysfs 读取温度失败: {e}")
 
-        # 3. 如果本地无法获取且开启了 SSH 硬件读取 (远程连接到 PVE 节点)
+        # 3. Fall back to remote SSH hardware metrics if configured
         ssh_cfg = self.config.get("ssh_hardware", {})
         if temps["cpu_temp"] is None and ssh_cfg.get("enabled", False):
             try:
@@ -100,10 +100,10 @@ class HardwareCollector:
         return temps
 
     def get_smart_health(self) -> list:
-        """获取 NVMe/HDD 磁盘 S.M.A.R.T 健康度与剩余寿命 (Wearout)"""
+        """Fetch NVMe/HDD disk S.M.A.R.T health and remaining wearout lifetime."""
         disks_info = []
         try:
-            # 扫描 /dev/sd* 和 /dev/nvme*
+            # Scan /dev/sd* and /dev/nvme* devices
             disk_paths = glob.glob("/dev/sd[a-z]") + glob.glob("/dev/nvme[0-9]n[0-9]")
             for disk in disk_paths:
                 cmd = ["smartctl", "-A", "-j", disk]
@@ -118,7 +118,7 @@ class HardwareCollector:
                         "temperature": data.get("temperature", {}).get("current")
                     }
                     
-                    # NVMe 剩余寿命 (Percentage Used -> Wearout = 100 - Used)
+                    # NVMe wearout remaining: 100 - percentage_used
                     nvme_health = data.get("nvme_smart_health_information_log", {})
                     if "percentage_used" in nvme_health:
                         used = nvme_health["percentage_used"]
@@ -131,7 +131,7 @@ class HardwareCollector:
         return disks_info
 
     def get_ups_status(self) -> dict:
-        """获取 UPS 状态 (若安装了 nut apcupsd)"""
+        """Fetch UPS battery and load status via upsc."""
         ups_info = {"connected": False, "status": "Unknown", "battery_charge": None, "load_percent": None}
         try:
             res = subprocess.run(["upsc", "myups@localhost"], capture_output=True, text=True, timeout=2)
@@ -152,7 +152,7 @@ class HardwareCollector:
         return ups_info
 
     def collect_from_pve_collector(self, pve_collector) -> list:
-        """纯 PVE REST API 模式获取磁盘与 SMART 健康度 (100% 免 SSH)"""
+        """Fetch disk SMART and wearout metrics using PVE REST API (SSH-free)."""
         disks_info = []
         try:
             raw_disks = pve_collector.get_disks_list()
@@ -176,11 +176,11 @@ class HardwareCollector:
         return disks_info
 
     def collect_all(self, pve_collector=None) -> dict:
-        """收集硬件相关的所有状态"""
+        """Collect all hardware metrics (temperatures, SMART, UPS)."""
         local_temps = self.get_temperatures()
         smart_info = self.get_smart_health()
 
-        # 如果本地未安装 smartctl 或者在 Docker 中免 SSH 运行，自动从 PVE REST API 补充磁盘 SMART 与寿命
+        # Fall back to PVE REST API when local smartctl/dev access is unavailable
         if not smart_info and pve_collector:
             smart_info = self.collect_from_pve_collector(pve_collector)
 

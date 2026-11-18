@@ -8,7 +8,7 @@ logger = logging.getLogger("pveMonitor.engine.alerter")
 HISTORY_FILE = "logs/alert_history.json"
 
 class AlertEngine:
-    """即时异常预警规则评估引擎 (包含防刷屏 Cooling 冷却机制，持久化记录跨重启)"""
+    """Alert evaluation engine with persistent cooldown tracking across restarts."""
 
     def __init__(self, config: dict, history_file: str = HISTORY_FILE):
         self.config = config
@@ -16,12 +16,12 @@ class AlertEngine:
         self.cooldown_minutes = config.get("alert_cooldown_minutes", 60)
         self.history_file = history_file
         
-        # 记录已触发告警的上次发送时间 { alert_key: datetime }
+        # Last triggered timestamp per alert key: { alert_key: datetime }
         self._alert_history = {}
         self._load_history()
 
     def _load_history(self):
-        """从持久化文件加载告警历史"""
+        """Load persistent alert history from JSON file."""
         if not self.history_file or not os.path.exists(self.history_file) or os.path.getsize(self.history_file) == 0:
             return
         try:
@@ -33,7 +33,7 @@ class AlertEngine:
             logger.warning(f"读取告警历史记录失败: {e}")
 
     def _save_history(self):
-        """将告警历史持久化至 JSON 文件"""
+        """Persist alert history to JSON file."""
         if not self.history_file:
             return
         try:
@@ -45,7 +45,7 @@ class AlertEngine:
             logger.warning(f"保存告警历史记录失败: {e}")
 
     def _is_in_cooldown(self, alert_key: str) -> bool:
-        """检查特定规则告警是否尚处于冷却时间内"""
+        """Check whether an alert rule is currently in cooldown period."""
         if alert_key not in self._alert_history:
             return False
         last_time = self._alert_history[alert_key]
@@ -53,15 +53,15 @@ class AlertEngine:
         return elapsed < self.cooldown_minutes
 
     def _mark_alerted(self, alert_key: str):
-        """记录告警触发时间并持久化"""
+        """Record and persist alert trigger timestamp."""
         self._alert_history[alert_key] = datetime.datetime.now()
         self._save_history()
 
     def check_alerts(self, api_data: dict, hw_data: dict, health_data: dict) -> list:
-        """根据最新监控数据评估告警规则，返回待触发的告警列表"""
+        """Evaluate monitoring thresholds and return triggered alerts."""
         alerts = []
         
-        # 1. 检查 CPU / NVMe 温度
+        # 1. CPU and NVMe temperature thresholds
         temp_th = self.thresholds.get("temperature", {})
         cpu_warning_th = temp_th.get("cpu_warning", 75)
         nvme_warning_th = temp_th.get("nvme_warning", 60)
@@ -89,7 +89,7 @@ class AlertEngine:
                     })
                     self._mark_alerted(key)
 
-        # 2. 检查内存与 Swap 占用率
+        # 2. Host RAM and Swap memory usage thresholds
         mem_th = self.thresholds.get("memory", {})
         mem_warning_th = mem_th.get("usage_percent_warning", 90)
         swap_warning_th = mem_th.get("swap_percent_warning", 50)
@@ -123,12 +123,16 @@ class AlertEngine:
                     })
                     self._mark_alerted(key)
 
-        # 3. 检查关键虚拟机/容器离线状态
+        # 3. Stopped status check for monitored VM/CT instances
         vm_th = self.thresholds.get("vms", {})
         if vm_th.get("alert_on_stopped", True):
             key_vms = vm_th.get("key_vm_ids", [])
             all_guests = api_data.get("vms", []) + api_data.get("lxcs", [])
             for g in all_guests:
+                # Ignore VM/CT templates as they are intentionally stopped
+                if g.get("template") == 1:
+                    continue
+
                 g_id = g.get("vmid") or g.get("id")
                 g_name = g.get("name", "Unknown")
                 g_status = g.get("status")
@@ -143,7 +147,7 @@ class AlertEngine:
                         })
                         self._mark_alerted(key)
 
-        # 4. 检查最近 OOM 内存溢出日志
+        # 4. Kernel OOM killer event detection
         oom_events = health_data.get("recent_oom_events", [])
         if oom_events:
             key = "oom_event_detected"

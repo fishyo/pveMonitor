@@ -1,4 +1,7 @@
+import copy
+import html
 import logging
+import os
 import threading
 import time
 import requests
@@ -8,7 +11,7 @@ CONFIG_FILE = "config.yaml"
 logger = logging.getLogger("pveMonitor.telegram_bot")
 
 class TelegramBotListener:
-    """Telegram Bot 交互式管理中心与指令监听器 (后台线程)"""
+    """Interactive management center and command listener for Telegram Bot."""
 
     def __init__(self, config: dict, app_instance):
         self.config = config
@@ -36,7 +39,7 @@ class TelegramBotListener:
         logger.info("Telegram Bot 交互管理中心监听已启动...")
 
     def _flush_old_updates(self):
-        """清空启动前离线期间积累的 Telegram 历史待处理消息"""
+        """Purge pending Telegram backlog messages accumulated while offline."""
         url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
         try:
             resp = requests.get(url, params={"offset": -1, "timeout": 5}, timeout=10)
@@ -53,10 +56,33 @@ class TelegramBotListener:
         self.running = False
 
     def _save_config_and_reload(self, new_config: dict):
-        """写入并重新加载 config.yaml"""
+        """Save sanitized configuration to config.yaml without exposing env secrets."""
+        disk_cfg = {}
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    disk_cfg = yaml.safe_load(f) or {}
+            except Exception as e:
+                logger.warning(f"读取原始配置文件以隔离敏感凭据失败: {e}")
+
+        # Deep copy to sanitize credentials before dumping to disk
+        dump_cfg = copy.deepcopy(new_config)
+        if os.getenv("PVE_PASSWORD"):
+            if "pve" in dump_cfg:
+                dump_cfg["pve"]["password"] = disk_cfg.get("pve", {}).get("password", "YOUR_PVE_PASSWORD")
+        if os.getenv("TG_BOT_TOKEN"):
+            if "notifiers" in dump_cfg and "telegram" in dump_cfg["notifiers"]:
+                dump_cfg["notifiers"]["telegram"]["bot_token"] = disk_cfg.get("notifiers", {}).get("telegram", {}).get("bot_token", "YOUR_TELEGRAM_BOT_TOKEN")
+        if os.getenv("TG_CHAT_ID"):
+            if "notifiers" in dump_cfg and "telegram" in dump_cfg["notifiers"]:
+                dump_cfg["notifiers"]["telegram"]["chat_id"] = disk_cfg.get("notifiers", {}).get("telegram", {}).get("chat_id", "YOUR_TELEGRAM_CHAT_ID")
+        if os.getenv("SMTP_PASSWORD") or os.getenv("GMAIL_PASSWORD"):
+            if "notifiers" in dump_cfg and "email" in dump_cfg["notifiers"]:
+                dump_cfg["notifiers"]["email"]["password"] = disk_cfg.get("notifiers", {}).get("email", {}).get("password", "YOUR_EMAIL_AUTH_CODE")
+
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            yaml.safe_dump(new_config, f, allow_unicode=True, sort_keys=False)
-        logger.info("已通过 Telegram 指令更新 config.yaml")
+            yaml.safe_dump(dump_cfg, f, allow_unicode=True, sort_keys=False)
+        logger.info("已通过 Telegram 指令更新 config.yaml (敏感环境变量未写入磁盘)")
 
     def _send_reply(self, chat_id: str, text: str, parse_mode: str = "HTML", reply_markup: dict = None):
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
@@ -86,10 +112,10 @@ class TelegramBotListener:
         except Exception as e:
             logger.error(f"Telegram 应答 callback query 失败: {e}")
 
-    # ==================== 页面面板构建器 (Menu Builders) ====================
+    # ==================== Menu Builders ====================
 
     def _build_manage_menu(self) -> tuple[str, dict]:
-        """构建主管理中心面板 (Manage Control Center)"""
+        """Build the main interactive control center menu."""
         node_name = self.config.get("pve", {}).get("node_name", "pve")
         alert_interval = self.config.get("schedule", {}).get("alert_interval_seconds", 120)
         alert_status = f"🟢 轮询中 ({alert_interval}s)" if alert_interval > 0 else "🔴 已暂停"
@@ -124,7 +150,7 @@ class TelegramBotListener:
         return text, {"inline_keyboard": keyboard}
 
     def _build_vm_menu(self) -> tuple[str, dict]:
-        """从 PVE 自动获取所有实例 ID 与名称，构建带开关与返回按钮的可视化面板"""
+        """Fetch VM/CT instances from PVE and render interactive toggle menu."""
         vm_cfg = self.config.get("thresholds", {}).get("vms", {})
         alert_on = vm_cfg.get("alert_on_stopped", True)
         key_vms = list(vm_cfg.get("key_vm_ids", []))
@@ -194,7 +220,7 @@ class TelegramBotListener:
         return text, {"inline_keyboard": keyboard}
 
     def _build_thresholds_menu(self) -> tuple[str, dict]:
-        """构建告警阈值调整面板 (Thresholds Panel)"""
+        """Build thresholds configuration menu."""
         th = self.config.get("thresholds", {})
         temp_th = th.get("temperature", {})
         mem_th = th.get("memory", {})
@@ -232,7 +258,7 @@ class TelegramBotListener:
         return text, {"inline_keyboard": keyboard}
 
     def _build_notifiers_menu(self) -> tuple[str, dict]:
-        """构建通知渠道控制面板 (Notifiers Panel)"""
+        """Build notification channels and alert polling control menu."""
         n_cfg = self.config.get("notifiers", {})
         tg_briefing = n_cfg.get("telegram", {}).get("briefing_enabled", True)
         email_enabled = n_cfg.get("email", {}).get("enabled", False)
@@ -266,7 +292,7 @@ class TelegramBotListener:
         return text, {"inline_keyboard": keyboard}
 
     def _build_traffic_menu(self) -> tuple[str, dict]:
-        """构建流量统计维度开关面板 (Traffic Dimensions Panel)"""
+        """Build traffic dimensions toggles menu."""
         tr = self.config.get("traffic", {})
         d = "🟢 开" if tr.get("show_daily", True) else "🔴 关"
         w = "🟢 开" if tr.get("show_weekly", True) else "🔴 关"
@@ -320,11 +346,13 @@ class TelegramBotListener:
     # ==================== Callback Query Handler ====================
 
     def _handle_callback_query(self, cb_id: str, chat_id: str, msg_id: int, data: str):
-        if self.chat_id and str(chat_id) != self.chat_id:
+        # Enforce strict authorization; reject if chat_id is unconfigured or mismatched
+        if not self.chat_id or str(chat_id) != self.chat_id:
+            logger.warning(f"拒绝未授权的 Telegram 按钮回调请求, Chat ID: {chat_id}")
             self._answer_callback(cb_id, "⛔ 未授权的操作")
             return
 
-        # 菜单导航回调
+        # Menu navigation callbacks
         if data in ["m_manage", "menu_main"]:
             self._answer_callback(cb_id)
             text, reply_markup = self._build_manage_menu()
@@ -360,7 +388,7 @@ class TelegramBotListener:
             self._answer_callback(cb_id, "管理中心已关闭")
             self._edit_message(chat_id, msg_id, "❌ <b>管理中心已关闭</b>")
 
-        # 实例监控面板回调
+        # Guest monitoring selection callbacks
         elif data.startswith("toggle_vm_"):
             try:
                 vm_id = int(data.replace("toggle_vm_", ""))
@@ -398,7 +426,7 @@ class TelegramBotListener:
             text, reply_markup = self._build_vm_menu()
             self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
 
-        # 阈值调整回调
+        # Threshold adjustment callbacks
         elif data.startswith("th_"):
             parts = data.split("_")
             metric = parts[1]
@@ -427,7 +455,7 @@ class TelegramBotListener:
             text, reply_markup = self._build_thresholds_menu()
             self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
 
-        # 通知渠道控制回调
+        # Notification channels and alert engine toggle callbacks
         elif data == "n_tg_briefing":
             tg_cfg = self.config.setdefault("notifiers", {}).setdefault("telegram", {})
             curr = tg_cfg.get("briefing_enabled", True)
@@ -466,7 +494,7 @@ class TelegramBotListener:
             text, reply_markup = self._build_notifiers_menu()
             self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
 
-        # 流量维度回调
+        # Traffic dimensions toggles callbacks
         elif data.startswith("tr_"):
             dim = data.replace("tr_", "")
             key_map = {"daily": "show_daily", "weekly": "show_weekly", "monthly": "show_monthly", "total": "show_total"}
@@ -481,7 +509,7 @@ class TelegramBotListener:
                 text, reply_markup = self._build_traffic_menu()
                 self._edit_message(chat_id, msg_id, text, reply_markup=reply_markup)
 
-        # 命令动作回调
+        # Action execution callbacks
         elif data == "cmd_status":
             self._answer_callback(cb_id, "正在实时拉取简报...")
             try:
@@ -489,7 +517,7 @@ class TelegramBotListener:
                 keyboard = [[{"text": "🔙 返回管理中心", "callback_data": "m_manage"}]]
                 self._send_reply(chat_id, brief_data["tg_html"], parse_mode="HTML", reply_markup={"inline_keyboard": keyboard})
             except Exception as e:
-                self._send_reply(chat_id, f"❌ 采集过程出错: {e}")
+                self._send_reply(chat_id, f"❌ 采集过程出错: {html.escape(str(e))}")
 
         elif data == "cmd_temp":
             self._answer_callback(cb_id)
@@ -498,7 +526,8 @@ class TelegramBotListener:
     # ==================== Command Handler ====================
 
     def _handle_command(self, chat_id: str, text: str):
-        if self.chat_id and str(chat_id) != self.chat_id:
+        # Enforce strict authorization; reject if chat_id is unconfigured or mismatched
+        if not self.chat_id or str(chat_id) != self.chat_id:
             logger.warning(f"拒绝未经授权的 Telegram 交互请求, Chat ID: {chat_id}")
             self._send_reply(chat_id, "⛔ 未授权的 Chat ID，拒绝操作。")
             return
@@ -541,7 +570,7 @@ class TelegramBotListener:
                 keyboard = [[{"text": "🔙 返回管理中心", "callback_data": "m_manage"}]]
                 self._send_reply(chat_id, brief_data["tg_html"], parse_mode="HTML", reply_markup={"inline_keyboard": keyboard})
             except Exception as e:
-                self._send_reply(chat_id, f"❌ 采集过程出错: {e}", parse_mode="HTML")
+                self._send_reply(chat_id, f"❌ 采集过程出错: {html.escape(str(e))}", parse_mode="HTML")
 
         elif cmd in ["/temp", "/temperature"]:
             try:
@@ -732,7 +761,7 @@ class TelegramBotListener:
                     for update in updates:
                         self.offset = update["update_id"] + 1
 
-                        # 1. 响应按钮点击 (callback_query)
+                        # 1. Handle inline button callback queries
                         if "callback_query" in update:
                             cb = update["callback_query"]
                             cb_id = cb.get("id")
@@ -748,7 +777,7 @@ class TelegramBotListener:
                                 ).start()
                             continue
 
-                        # 2. 响应文本消息指令 (message)
+                        # 2. Handle text message commands
                         msg = update.get("message", {})
                         msg_date = msg.get("date", 0)
                         if self.start_time and msg_date and msg_date < (self.start_time - 10):

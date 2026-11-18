@@ -1,19 +1,30 @@
 # pveMonitor
 
-Proxmox VE 状态每日简报与即时异常预警服务。通过 PVE REST API 采集节点、虚拟机、容器、磁盘 SMART 及外接 USB 硬件状态，支持邮件、Telegram Bot 及 Webhook 推送。
+Proxmox VE 状态监控、每日简报与异常预警服务。通过 PVE REST API 采集节点、虚拟机、容器、磁盘 SMART 及外接硬件状态，支持邮件、Telegram 与 Webhook 多渠道推送。
 
----
+## 特性
 
-## ⚡ 快速部署
+- **免特权采集**：基于 PVE REST API，无需宿主机特权模式或挂载系统目录。
+- **定时简报**：支持 Cron 定时生成节点与虚拟机状态简报（HTML 邮件、Markdown、Telegram 消息）。
+- **实时告警**：支持 CPU/NVMe 温度、内存、Swap 占用率及关键实例停机告警，内置冷却防刷屏机制。
+- **Telegram 交互**：支持通过 Telegram Bot 实时查询状态、硬件温度，并动态调整阈值与监控范围。
+- **多渠道分发**：支持 SMTP 邮件、Telegram Bot 及主流 Webhook（飞书、钉钉、企业微信、Bark 等）。
 
-### 1. 准备配置文件
-获取配置模版并按需修改：
+## 快速部署
+
+### 1. 准备配置
+
+下载配置模板并保存为 `config.yaml`：
+
 ```bash
-wget https://raw.githubusercontent.com/fishyo/pveMonitor/master/config.example.yaml -O config.yaml
+curl -fsSL https://raw.githubusercontent.com/fishyo/pveMonitor/master/config.example.yaml -o config.yaml
 ```
 
-### 2. 使用 Docker Compose 运行 (推荐)
-无需本地构建，直接拉取 GitHub 容器镜像 (GHCR)：
+根据实际环境修改 `config.yaml` 中的 PVE 连接信息及通知渠道。
+
+### 2. 使用 Docker Compose 运行
+
+创建 `docker-compose.yml`：
 
 ```yaml
 version: '3.8'
@@ -34,14 +45,15 @@ services:
       retries: 3
 ```
 
-启动容器：
+启动服务：
+
 ```bash
 docker compose up -d
 ```
 
----
+## 配置参考
 
-## ⚙️ 核心配置说明 (`config.yaml`)
+`config.yaml` 核心配置结构如下：
 
 ```yaml
 pve:
@@ -49,13 +61,14 @@ pve:
   port: 8006
   node_name: "pve"
   verify_ssl: false
-  auth_type: "password"      # 选填 password 或 token
+  auth_type: "token"          # 可选: token 或 password
   user: "root@pam"
-  password: "YOUR_PVE_PASSWORD"
+  token_id: "pvemonitor"
+  token_secret: "YOUR_TOKEN_SECRET"
 
 schedule:
-  briefing_cron: "0 8 * * *"   # 每日 08:00 发送简报
-  alert_interval_seconds: 120  # 每 2 分钟轮询告警 (设为 0 可暂停轮询)
+  briefing_cron: "0 8 * * *"   # 每天 08:00 发送简报
+  alert_interval_seconds: 120  # 告警轮询间隔（秒），设为 0 暂停
 
 thresholds:
   temperature:
@@ -66,78 +79,68 @@ thresholds:
     swap_percent_warning: 50
   vms:
     alert_on_stopped: true
-    key_vm_ids: [100, 101]
+    key_vm_ids: [100, 101]     # 重点监控实例 ID；留空则监控全部非模板实例
 
 notifiers:
   email:
-    enabled: true
-    smtp_host: "smtp.gmail.com"
-    smtp_port: 587
-    use_ssl: false
-    username: "your_email@gmail.com"
-    password: "YOUR_SMTP_PASSWORD"
-    sender: "PVE 监控服务 <your_email@gmail.com>"
+    enabled: false
+    smtp_host: "smtp.example.com"
+    smtp_port: 465
+    use_ssl: true
+    username: "user@example.com"
+    password: "YOUR_PASSWORD"
+    sender: "pveMonitor <user@example.com>"
     receivers:
-      - "your_email@gmail.com"
+      - "user@example.com"
 
   telegram:
     enabled: true
-    briefing_enabled: true     # 是否开启 Telegram 每日定时简报自动推送
+    briefing_enabled: true
     bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
     chat_id: "YOUR_TELEGRAM_CHAT_ID"
+
+  webhook:
+    enabled: false
+    type: "feishu"             # 支持: feishu, dingtalk, wechat, serverchan, bark
+    url: ""
 ```
 
-> **环境变量覆盖支持**：可在容器中配置环境变量 `PVE_HOST`、`PVE_PASSWORD`、`TG_BOT_TOKEN`、`TG_CHAT_ID` 及 `SMTP_PASSWORD`，自动覆盖配置文件中的对应字段。
+支持通过环境变量覆盖敏感凭据：`PVE_HOST`、`PVE_PASSWORD`、`TG_BOT_TOKEN`、`TG_CHAT_ID`、`SMTP_PASSWORD`。
 
----
+## Telegram Bot 指令
 
-## 🛡️ PVE API 最小权限配置
+| 指令 | 说明 |
+| :--- | :--- |
+| `/manage` 或 `/menu` | 打开管理控制面板（阈值、实例监控、通知渠道开关） |
+| `/status` | 实时拉取并回复当前节点与虚拟机运行状态简报 |
+| `/temp` | 查看实时硬件温度（CPU Package/核心、NVMe/磁盘） |
+| `/key_vms` | 实例监控点选菜单 |
+| `/set_cpu <温度>` | 设置 CPU 告警阈值（例：`/set_cpu 75`） |
+| `/set_nvme <温度>` | 设置 NVMe 告警阈值（例：`/set_nvme 60`） |
+| `/set_mem <百分比>` | 设置内存告警阈值（例：`/set_mem 90`） |
+| `/set_key_vms <IDs>` | 批量设置监控实例（例：`/set_key_vms 100,101`，清空填 `clear`） |
+| `/add_key_vm <ID>` | 添加单个实例到重点监控列表 |
+| `/del_key_vm <ID>` | 从重点监控列表中移除指定实例 |
+| `/toggle_alert` | 暂停或恢复后台告警轮询 |
+| `/toggle_briefing` | 开启或关闭 Telegram 定时简报推送 |
+| `/cancel` | 清空 Telegram 消息队列积压并重置限频计数器 |
 
-如需避免使用 `root` 账户，可在 PVE 管理界面中创建专属只读 API Token：
-
-1. **创建角色**：数据中心 -> 角色 -> 添加角色 `PVEAuditor`（权限：`Sys.Audit`, `VM.Audit`, `Datastore.Audit`）。
-2. **创建用户与 Token**：数据中心 -> 用户 -> 添加 `pvemonitor@pve` 指派 `PVEAuditor` 角色；进入 API Token 添加 Token 并填入 `config.yaml`。
-
----
-
-## 🤖 Telegram Bot 交互指令
-
-向 Telegram Bot 发送以下指令即可实现实时交互：
-- `/manage` - 🎛️ **呼出管理控制中心** (推荐！模块化可视化配置实例监控、告警阈值、通知渠道及流量维度)
-- `/start` 或 `/menu` - 呼出管理控制中心主面板
-- `/key_vms` - 直达虚拟机/容器重点监控可视化点选面板
-- `/status` - 实时拉取并回复最新简报 (仅在 Telegram 框架内回复，不触发邮件/Webhook)
-- `/temp` - 单独查询当前 CPU 包、核心及 NVMe/硬盘硬件温度
-- `/cancel` - 强行清空待处理消息队列并重置频控与排队状态
-- `/set_cpu <温度>` - 动态修改 CPU 告警阈值
-- `/set_mem <百分比>` - 动态修改内存告警比例
-- `/set_nvme <温度>` - 动态修改 NVMe 固态告警阈值
-- `/set_key_vms <ID列表>` - 动态设置重点监控实例 (如 `/set_key_vms 101,102` 或 `/set_key_vms clear` 清空列表)
-- `/add_key_vm <ID>` - 添加指定实例到重点监控 (如 `/add_key_vm 101`)
-- `/del_key_vm <ID>` - 从重点监控中移除指定实例 (如 `/del_key_vm 103`)
-- `/toggle_vm_alert` - 一键开启 / 关闭虚拟机/容器停机告警
-- `/toggle_alert` - 动态暂停 / 恢复后台告警轮询
-- `/toggle_briefing` - 动态开启 / 关闭 Telegram 定时简报自动推送
-- `/toggle_daily` - 开关简报 24h 流量统计
-- `/toggle_email` - 开关邮件通知
-
----
-
-## 🧪 常用测试命令
+## 常用测试命令
 
 ```bash
-# 立即触发一次简报推送测试
+# 触发一次测试简报发送
 docker compose exec pve-monitor python main.py --test-briefing
 
-# 立即触发一次告警推送测试
+# 触发一次测试告警发送
 docker compose exec pve-monitor python main.py --test-alert
 
-# 运行容器内部健康检查
+# 执行容器健康检查
 docker compose exec pve-monitor python healthcheck.py
+
+# 执行单元测试套件
+python -m unittest discover -s tests -p "test_*.py"
 ```
 
----
-
-## 📄 开源协议
+## 许可证
 
 [MIT License](LICENSE)
